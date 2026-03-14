@@ -57,13 +57,13 @@ void linear::save(const std::string& path) {
   if (!out) {
     throw std::runtime_error("failed to save hash");
   }
-  out.write(reinterpret_cast<const char*>(&ptr_->capacity), sizeof(uint64_t));
+  out.write(reinterpret_cast<const char*>(&ptr_->capacity), sizeof(uint32_t));
   out.write(reinterpret_cast<const char*>(ptr_->table), static_cast<std::streamsize>(ptr_->capacity * sizeof(slot)));
 }
 
 void linear::load(void* ptr) {
   auto* base = static_cast<std::uint8_t*>(ptr);
-  ptr_->capacity = *reinterpret_cast<uint64_t*>(base);
-  ptr_->table = reinterpret_cast<slot*>(base + sizeof(uint64_t));
+  ptr_->capacity = *reinterpret_cast<uint32_t*>(base);
+  ptr_->table = reinterpret_cast<slot*>(base + sizeof(uint32_t));
 }
 }

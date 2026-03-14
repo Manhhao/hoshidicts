@@ -2,10 +2,9 @@
 
 #include <chrono>
 #include <filesystem>
-#include <print>
+#include <iostream>
 #include <ranges>
 #include <string>
-#include <iostream>
 
 #include "../src/text_processor/text_processor.hpp"
 #include "hoshidicts/deinflector.hpp"
@@ -49,13 +48,14 @@ void cmd_deinflect(const std::string& inflected) {
   Deinflector deinflector;
   auto results = deinflector.deinflect(inflected);
 
-  std::cout << std::format("deinflections for: {} length: {}\n", inflected, utf8::distance(inflected.begin(), inflected.end()));
+  std::cout << std::format("deinflections for: {} length: {}\n", inflected,
+                           utf8::distance(inflected.begin(), inflected.end()));
   std::cout << std::format("found {} candidates\n\n", results.size());
 
   for (const auto& r : results) {
     std::cout << std::format("{} (conditions: {})", r.text, r.conditions);
     if (!r.trace.empty()) {
-     std::cout << std::format("  ");
+      std::cout << std::format("  ");
       for (size_t i = 0; i < r.trace.size(); ++i) {
         std::cout << std::format("{}{}\n", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
       }
@@ -80,7 +80,8 @@ void cmd_query(const std::string& db_path, const std::string& expression) {
   dict_query.add_term_dict(db_path);
   auto result = dict_query.query(expression);
 
-  std::cout << std::format("query results for: {} length: {}\n", expression, utf8::distance(expression.begin(), expression.end()));
+  std::cout << std::format("query results for: {} length: {}\n", expression,
+                           utf8::distance(expression.begin(), expression.end()));
   std::cout << std::format("{} entries\n", result.size());
   for (const auto& r : result) {
     std::cout << std::format("---------------------------------------------------------------");
@@ -123,7 +124,8 @@ void cmd_lookup(const std::vector<std::string>& db_paths, const std::string& loo
   Lookup lookup(dict_query, deinflect);
   auto result = lookup.lookup(lookup_string, max_results, scan_length);
 
-  std::cout << std::format("lookup results for: {} max_results: {} scan_length: {}\n", lookup_string, max_results, scan_length);
+  std::cout << std::format("lookup results for: {} max_results: {} scan_length: {}\n", lookup_string, max_results,
+                           scan_length);
   std::cout << std::format("{} results\n", result.size());
 
   for (const auto& r : result) {

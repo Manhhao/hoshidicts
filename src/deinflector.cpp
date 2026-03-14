@@ -5,8 +5,8 @@
 #include <utf8.h>
 
 #include <algorithm>
-#include <cstddef>
 #include <array>
+#include <cstddef>
 
 Deinflector::Deinflector() : max_length_(0) { init_transforms(); }
 
