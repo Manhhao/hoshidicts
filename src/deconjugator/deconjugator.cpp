@@ -8,6 +8,7 @@
 #include <glaze/glaze.hpp>
 #include <optional>
 #include <string_view>
+#include <cstdint>
 
 #include "deconjugation_rules.hpp"
 

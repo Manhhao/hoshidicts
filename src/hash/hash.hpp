@@ -5,22 +5,27 @@
 #include <vector>
 
 namespace hash {
-enum phf_type : std::uint8_t {
-  dense,
-  single
-};
-class mphf {
+class linear {
  public:
-  mphf();
-  ~mphf();
+  linear();
+  ~linear();
   uint64_t operator()(std::string_view key) const;
 
-  void build(const std::vector<std::string_view>& keys);
+  void build(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries);
+  void free();
   void save(const std::string& path);
-  void load(const std::string& path, phf_type type);
-  phf_type type() const;
+  void load(void* ptr);
+
  private:
-  struct phf;
-  std::unique_ptr<phf> ptr_;
+  struct slot {
+    uint64_t hash;
+    uint64_t offset;
+  };
+
+  struct table {
+    uint32_t capacity = 0;
+    slot* table;
+  };
+  std::unique_ptr<table> ptr_;
 };
 }

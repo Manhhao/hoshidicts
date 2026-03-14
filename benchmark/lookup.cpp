@@ -1,16 +1,23 @@
+#include "hoshidicts/lookup.hpp"
+
 #include <algorithm>
 #include <chrono>
+#include <format>
+#include <iostream>
 #include <numeric>
-#include <print>
 #include <vector>
 
+<<<<<<< HEAD
 #include "hoshidicts/deconjugator.hpp"
 #include "hoshidicts/lookup.hpp"
+=======
+#include "hoshidicts/deinflector.hpp"
+>>>>>>> fbd2d5a (fix windows build and some optimizations (#9))
 #include "hoshidicts/query.hpp"
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::println(stderr, "{} <dict_path> <word> <iterations>", argv[0]);
+    std::cout << std::format("{} <dict_path> <word> <iterations>", argv[0]);
     return 1;
   }
 
@@ -41,11 +48,11 @@ int main(int argc, char** argv) {
   const double total = std::accumulate(durations.begin(), durations.end(), 0.0);
   const double average = total / durations.size();
 
-  std::println("word: {} iterations: {}", word, iterations);
-  std::println("total: {:.2f}ms", total);
-  std::println("avg: {:.2f}ms", average);
-  std::println("min: {:.2f}ms", *min);
-  std::println("max: {:.2f}ms", *max);
+  std::cout << std::format("word: {} iterations: {}", word, iterations);
+  std::cout << std::format("total: {:.2f}ms", total);
+  std::cout << std::format("avg: {:.2f}ms", average);
+  std::cout << std::format("min: {:.2f}ms", *min);
+  std::cout << std::format("max: {:.2f}ms", *max);
 
   return 0;
 }

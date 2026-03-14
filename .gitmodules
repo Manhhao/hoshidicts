@@ -7,12 +7,12 @@
 [submodule "external/glaze"]
 	path = external/glaze
 	url = https://github.com/stephenberry/glaze
-[submodule "external/pthash"]
-	path = external/pthash
-	url = https://github.com/jermp/pthash.git
 [submodule "external/zstd"]
 	path = external/zstd
 	url = https://github.com/facebook/zstd.git
 [submodule "external/unordered_dense"]
 	path = external/unordered_dense
 	url = https://github.com/martinus/unordered_dense.git
+[submodule "external/xxHash"]
+	path = external/xxHash
+	url = https://github.com/Cyan4973/xxHash.git
