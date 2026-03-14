@@ -34,7 +34,7 @@ struct ProcessedFile {
   std::vector<char> data;
   std::vector<std::pair<uint64_t, uint64_t>> term_offsets;
   ankerl::unordered_dense::map<uint64_t, std::vector<char>> glossaries;
-  std::vector<std::pair<size_t, uint64_t>> glossary_offsets;
+  std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
   size_t count = 0;
 };
 
@@ -259,7 +259,7 @@ ProcessedFile process_term_bank(const std::string& content) {
     uint64_t glossary_offset = processed.data.size();
     write_u64(processed.data, 0);
     write_u32(processed.data, blob_size);
-    processed.glossary_offsets.emplace_back(glossary_offset, glossary_hash);
+    processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
 
     write_u8(processed.data, definition_tags.size());
     write_str(processed.data, definition_tags);
@@ -318,7 +318,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   }
 
   size_t max_threads =
-      low_ram ? 3 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
   std::deque<std::future<ProcessedFile>> threads;
 
   ankerl::unordered_dense::map<uint64_t, uint64_t> glossaries;
@@ -339,7 +339,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
       file.write(glossary_buf.data(), static_cast<std::streamsize>(glossary_buf.size()));
     }
 
-    for (auto& [pos, hash] : processed.glossary_offsets) {
+    for (auto& [hash, pos] : processed.glossary_offsets) {
       uint64_t glossary_offset = glossaries[hash];
       std::memcpy(processed.data.data() + pos, &glossary_offset, sizeof(uint64_t));
     }
@@ -384,7 +384,7 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   }
 
   size_t max_threads =
-      low_ram ? 3 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
   std::deque<std::future<ProcessedFile>> threads;
   auto write_processed = [&](ProcessedFile&& processed) {
     if (processed.data.empty()) {
@@ -424,7 +424,7 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
 }
 
 void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
-                        std::vector<uint64_t>& keys, std::vector<uint64_t>& key_offsets) {
+                        std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
   std::vector<char> offset_buf;
   radix_sort(offsets);
   for (size_t i = 0; i < offsets.size();) {
@@ -433,8 +433,7 @@ void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint
       j++;
     }
 
-    keys.push_back(offsets[i].first);
-    key_offsets.push_back(write_offset);
+    hash_entries.emplace_back(offsets[i].first, write_offset);
 
     auto count = static_cast<uint32_t>(j - i);
     write_u32(offset_buf, count);
@@ -528,13 +527,12 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("empty dictionary");
     }
 
-    std::vector<uint64_t> keys;
-    std::vector<uint64_t> key_offsets;
-    write_offset_index(blobs, offsets, write_offset, keys, key_offsets);
+    std::vector<std::pair<uint64_t, uint64_t>> hash_entries;
+    write_offset_index(blobs, offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
     hash::linear table;
-    table.build(keys, key_offsets);
+    table.build(hash_entries);
     table.save(path + "/hash.table");
     table.free();
 

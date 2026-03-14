@@ -11,7 +11,7 @@ class linear {
   ~linear();
   uint64_t operator()(std::string_view key) const;
 
-  void build(const std::vector<uint64_t>& hashes, const std::vector<uint64_t>& offsets);
+  void build(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries);
   void free();
   void save(const std::string& path);
   void load(void* ptr);

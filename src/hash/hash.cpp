@@ -1,5 +1,7 @@
 #include "hash.hpp"
 
+#include <xxh3.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -7,8 +9,6 @@
 #include <fstream>
 #include <memory>
 #include <stdexcept>
-
-#include <xxh3.h>
 
 namespace hash {
 linear::linear() : ptr_(std::make_unique<table>()) {};
@@ -28,17 +28,17 @@ uint64_t linear::operator()(std::string_view key) const {
   }
 }
 
-void linear::build(const std::vector<uint64_t>& hashes, const std::vector<uint64_t>& offsets) {
-  ptr_->capacity = std::max<uint64_t>(hashes.size() * 10 / 7, 16);
+void linear::build(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
+  ptr_->capacity = std::max<uint64_t>(hash_entries.size() * 10 / 7, 16);
   ptr_->table = static_cast<slot*>(std::malloc(ptr_->capacity * sizeof(slot)));
   std::memset(ptr_->table, 0, ptr_->capacity * sizeof(slot));
 
-  for (uint64_t i = 0; i < hashes.size(); i++) {
-    uint64_t h = hashes[i];
+  for (const auto& he : hash_entries) {
+    uint64_t h = he.first;
     uint64_t pos = h % ptr_->capacity;
     while (true) {
       if (ptr_->table[pos].hash == 0) {
-        ptr_->table[pos] = {.hash = h, .offset = offsets[i]};
+        ptr_->table[pos] = {.hash = h, .offset = he.second};
         break;
       }
       pos = (pos + 1) % ptr_->capacity;
@@ -58,8 +58,7 @@ void linear::save(const std::string& path) {
     throw std::runtime_error("failed to save hash");
   }
   out.write(reinterpret_cast<const char*>(&ptr_->capacity), sizeof(uint64_t));
-  out.write(reinterpret_cast<const char*>(ptr_->table),
-            static_cast<std::streamsize>(ptr_->capacity * sizeof(slot)));
+  out.write(reinterpret_cast<const char*>(ptr_->table), static_cast<std::streamsize>(ptr_->capacity * sizeof(slot)));
 }
 
 void linear::load(void* ptr) {
