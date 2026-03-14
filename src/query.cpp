@@ -114,18 +114,18 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
 }
 
 struct DictionaryQuery::DictionaryData {
-  hash::mphf phf;
+  hash::linear table;
   uint8_t* blobs = nullptr;
   size_t blobs_size = 0;
-  uint64_t* offsets = nullptr;
-  size_t offsets_size = 0;
+  uint8_t* hash_table = nullptr;
+  size_t hash_table_size = 0;
   uint8_t* media = nullptr;
   size_t media_size = 0;
   ankerl::unordered_dense::map<std::string_view, std::pair<uint32_t, uint32_t>> media_index;
 
   ~DictionaryData() {
     unmap_file(blobs, blobs_size);
-    unmap_file(offsets, offsets_size);
+    unmap_file(hash_table, hash_table_size);
     unmap_file(media, media_size);
   }
 };
@@ -159,14 +159,14 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   }
 
   dict.data = std::make_unique<DictionaryData>();
-  dict.data->phf.load(path + "/hash.mph", static_cast<hash::phf_type>(hash_type));
 
-  auto [offsets, offsets_size] = map_file(path + "/offsets.bin");
-  if (!offsets) {
+  auto [hash_table, hash_table_size] = map_file(path + "/hash.table");
+  if (!hash_table) {
     return;
   }
-  dict.data->offsets_size = offsets_size;
-  dict.data->offsets = reinterpret_cast<uint64_t*>(offsets);
+  dict.data->hash_table_size = hash_table_size;
+  dict.data->hash_table = reinterpret_cast<uint8_t*>(hash_table);
+  dict.data->table.load(hash_table);
 
   auto [blobs, blobs_size] = map_file(path + "/blobs.bin");
   if (!blobs) {
@@ -220,8 +220,10 @@ void DictionaryQuery::add_pitch_dict(const std::string& path) {
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
   std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
   for (const auto& [name, styles, data] : term_dicts_) {
-    uint64_t hash = data->phf(expression);
-    uint64_t offset_addr = data->offsets[hash];
+    uint64_t offset_addr = data->table(expression);
+    if (offset_addr == 0) {
+      continue;
+    }
     const uint8_t* index_addr = data->blobs + offset_addr;
 
     uint32_t count = read_u32(index_addr);
@@ -293,9 +295,10 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [name, styles, data] : freq_dicts_) {
-      uint64_t hash = data->phf(term.expression);
-      uint64_t offset_addr = data->offsets[hash];
-
+      uint64_t offset_addr = data->table(term.expression);
+      if (offset_addr == 0) {
+        continue;
+      }
       const uint8_t* index_addr = data->blobs + offset_addr;
       uint32_t count = read_u32(index_addr);
 
@@ -343,9 +346,10 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [name, styles, data] : pitch_dicts_) {
-      uint64_t hash = data->phf(term.expression);
-      uint64_t offset_addr = data->offsets[hash];
-
+      uint64_t offset_addr = data->table(term.expression);
+      if (offset_addr == 0) {
+        continue;
+      }
       const uint8_t* index_addr = data->blobs + offset_addr;
       uint32_t count = read_u32(index_addr);
 

@@ -14,7 +14,6 @@ set(ZSTD_BUILD_STATIC ON CACHE BOOL "")
 
 add_subdirectory(external/zip)
 add_subdirectory(external/glaze)
-add_subdirectory(external/pthash)
 add_subdirectory(external/zstd)
 add_subdirectory(external/unordered_dense)
 
@@ -41,10 +40,10 @@ add_library(hoshidicts
 target_include_directories(hoshidicts PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/external/utfcpp/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/xxHash
 )
 
 target_link_libraries(hoshidicts PRIVATE
-    PTHASH
     zip
     glaze::glaze
     libzstd_static
@@ -56,8 +55,6 @@ add_executable(hoshidicts-cli
 )
 
 target_link_libraries(hoshidicts-cli PRIVATE
-    PTHASH
-    glaze::glaze
     hoshidicts
 )
 
