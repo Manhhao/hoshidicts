@@ -141,10 +141,6 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
     return;
   }
 
-  std::ifstream sui(path + "/.hoshidicts_1", std::ios::binary);
-  char hash_type;
-  sui.get(hash_type);
-
   Dictionary dict;
   Index index;
   std::string buf{};

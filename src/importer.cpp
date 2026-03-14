@@ -32,7 +32,7 @@ struct Files {
 
 struct ProcessedFile {
   std::vector<char> data;
-  std::vector<std::pair<uint64_t, uint64_t>> term_offsets;
+  std::vector<std::pair<uint64_t, uint64_t>> offsets;
   ankerl::unordered_dense::map<uint64_t, std::vector<char>> glossaries;
   std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
   size_t count = 0;
@@ -268,9 +268,9 @@ ProcessedFile process_term_bank(const std::string& content) {
     write_u8(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
 
-    processed.term_offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
+    processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     if (reading != expr) {
-      processed.term_offsets.emplace_back(XXH3_64bits(reading.data(), reading.size()), offset);
+      processed.offsets.emplace_back(XXH3_64bits(reading.data(), reading.size()), offset);
     }
     processed.count++;
   }
@@ -304,7 +304,7 @@ ProcessedFile process_meta_bank(const std::string& content) {
     write_u32(processed.data, data.size());
     write_str(processed.data, data);
 
-    processed.term_offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
+    processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     processed.count++;
   }
 
@@ -346,7 +346,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
 
     file.write(processed.data.data(), static_cast<std::streamsize>(processed.data.size()));
 
-    for (auto& [hash, offset] : processed.term_offsets) {
+    for (auto& [hash, offset] : processed.offsets) {
       offsets.emplace_back(hash, offset + write_offset);
     }
 
@@ -392,7 +392,7 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
     }
     file.write(processed.data.data(), static_cast<std::streamsize>(processed.data.size()));
 
-    for (auto& [hash, offset] : processed.term_offsets) {
+    for (auto& [hash, offset] : processed.offsets) {
       offsets.emplace_back(hash, offset + write_offset);
     }
 
