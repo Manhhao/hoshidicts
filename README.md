@@ -72,7 +72,7 @@ Results are filtered by part-of-speech tags defined in dictionaries, or added di
 - [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese deinflection rules and descriptions, Japanese preprocessor | GPLv3
 - [glaze](https://github.com/stephenberry/glaze): MIT
 - [kuba--/zip](https://github.com/kuba--/zip): MIT
-- [pthash](https://github.com/jermp/pthash): MIT
+- [xxHash](https://github.com/Cyan4973/xxHash): BSD-2-Clause
 - [zstd](https://github.com/facebook/zstd): BSD
 - [utfcpp](https://github.com/nemtrif/utfcpp): BSL-1.0
 - [unordered_dense](https://github.com/martinus/unordered_dense.git): MIT

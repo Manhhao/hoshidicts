@@ -32,9 +32,9 @@ struct Files {
 
 struct ProcessedFile {
   std::vector<char> data;
-  ankerl::unordered_dense::map<std::string, std::vector<uint64_t>> term_offsets;
+  std::vector<std::pair<uint64_t, uint64_t>> offsets;
   ankerl::unordered_dense::map<uint64_t, std::vector<char>> glossaries;
-  std::vector<std::pair<size_t, uint64_t>> glossary_offsets;
+  std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
   size_t count = 0;
 };
 
@@ -180,20 +180,33 @@ void write_bytes(std::vector<char>& out, const void* data, size_t n) {
   std::memcpy(out.data() + old_size, data, n);
 }
 
-void merge_offsets(ankerl::unordered_dense::map<std::string, std::vector<uint64_t>>& a,
-                   ankerl::unordered_dense::map<std::string, std::vector<uint64_t>>& b, uint64_t write_offset) {
-  for (auto& [key, b_offsets] : b) {
-    for (auto& offset : b_offsets) {
-      offset += write_offset;
+void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
+  if (offsets.size() < 2) {
+    return;
+  }
+
+  std::vector<std::pair<uint64_t, uint64_t>> temp(offsets.size());
+  auto* src = &offsets;
+  auto* dst = &temp;
+
+  for (uint32_t shift = 0; shift < 64; shift += 8) {
+    std::array<size_t, 256> pos{};
+    for (const auto& entry : *src) {
+      pos[(entry.first >> shift) & 0xff]++;
     }
 
-    auto it = a.find(key);
-    if (it == a.end()) {
-      a.emplace(key, std::move(b_offsets));
-    } else {
-      auto& values = it->second;
-      values.insert(values.end(), b_offsets.begin(), b_offsets.end());
+    size_t total = 0;
+    for (size_t& p : pos) {
+      size_t count = p;
+      p = total;
+      total += count;
     }
+
+    for (const auto& entry : *src) {
+      (*dst)[pos[(entry.first >> shift) & 0xff]++] = entry;
+    }
+
+    std::swap(src, dst);
   }
 }
 
@@ -246,7 +259,7 @@ ProcessedFile process_term_bank(const std::string& content) {
     uint64_t glossary_offset = processed.data.size();
     write_u64(processed.data, 0);
     write_u32(processed.data, blob_size);
-    processed.glossary_offsets.emplace_back(glossary_offset, glossary_hash);
+    processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
 
     write_u8(processed.data, definition_tags.size());
     write_str(processed.data, definition_tags);
@@ -255,9 +268,9 @@ ProcessedFile process_term_bank(const std::string& content) {
     write_u8(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
 
-    processed.term_offsets[std::string(expr)].push_back(offset);
+    processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     if (reading != expr) {
-      processed.term_offsets[std::string(reading)].push_back(offset);
+      processed.offsets.emplace_back(XXH3_64bits(reading.data(), reading.size()), offset);
     }
     processed.count++;
   }
@@ -291,22 +304,21 @@ ProcessedFile process_meta_bank(const std::string& content) {
     write_u32(processed.data, data.size());
     write_str(processed.data, data);
 
-    processed.term_offsets[std::string(expr)].push_back(offset);
+    processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     processed.count++;
   }
 
   return processed;
 }
 
-void write_terms(std::ofstream& file, ankerl::unordered_dense::map<std::string, std::vector<uint64_t>>& offsets,
-                 const std::string& zip_path, const std::vector<int>& files, uint64_t& write_offset,
-                 ImportResult& result, bool low_ram) {
+void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const std::string& zip_path,
+                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
   }
 
   size_t max_threads =
-      low_ram ? 3 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency() * 2));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
   std::deque<std::future<ProcessedFile>> threads;
 
   ankerl::unordered_dense::map<uint64_t, uint64_t> glossaries;
@@ -327,13 +339,17 @@ void write_terms(std::ofstream& file, ankerl::unordered_dense::map<std::string, 
       file.write(glossary_buf.data(), static_cast<std::streamsize>(glossary_buf.size()));
     }
 
-    for (auto& [pos, hash] : processed.glossary_offsets) {
+    for (auto& [hash, pos] : processed.glossary_offsets) {
       uint64_t glossary_offset = glossaries[hash];
       std::memcpy(processed.data.data() + pos, &glossary_offset, sizeof(uint64_t));
     }
 
     file.write(processed.data.data(), static_cast<std::streamsize>(processed.data.size()));
-    merge_offsets(offsets, processed.term_offsets, write_offset);
+
+    for (auto& [hash, offset] : processed.offsets) {
+      offsets.emplace_back(hash, offset + write_offset);
+    }
+
     write_offset += processed.data.size();
     result.term_count += processed.count;
   };
@@ -361,22 +377,25 @@ void write_terms(std::ofstream& file, ankerl::unordered_dense::map<std::string, 
   }
 }
 
-void write_meta(std::ofstream& file, ankerl::unordered_dense::map<std::string, std::vector<uint64_t>>& offsets,
-                const std::string& zip_path, const std::vector<int>& files, uint64_t& write_offset,
-                ImportResult& result, bool low_ram) {
+void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const std::string& zip_path,
+                const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
   }
 
   size_t max_threads =
-      low_ram ? 3 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency() * 2));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
   std::deque<std::future<ProcessedFile>> threads;
   auto write_processed = [&](ProcessedFile&& processed) {
     if (processed.data.empty()) {
       return;
     }
     file.write(processed.data.data(), static_cast<std::streamsize>(processed.data.size()));
-    merge_offsets(offsets, processed.term_offsets, write_offset);
+
+    for (auto& [hash, offset] : processed.offsets) {
+      offsets.emplace_back(hash, offset + write_offset);
+    }
+
     write_offset += processed.data.size();
     result.meta_count += processed.count;
   };
@@ -404,30 +423,39 @@ void write_meta(std::ofstream& file, ankerl::unordered_dense::map<std::string, s
   }
 }
 
-void write_offset_index(std::ostream& file, ankerl::unordered_dense::map<std::string, std::vector<uint64_t>>& offsets,
-                        uint64_t& write_offset, std::vector<std::string_view>& keys,
-                        std::vector<uint64_t>& key_offsets) {
+void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
+                        std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
   std::vector<char> offset_buf;
-  for (auto& [key, offs] : offsets) {
-    keys.push_back(key);
-    key_offsets.push_back(write_offset);
+  radix_sort(offsets);
+  for (size_t i = 0; i < offsets.size();) {
+    size_t j = i + 1;
+    while (j < offsets.size() && offsets[j].first == offsets[i].first) {
+      j++;
+    }
 
-    write_u32(offset_buf, offs.size());
-    write_bytes(offset_buf, offs.data(), offs.size() * sizeof(uint64_t));
+    hash_entries.emplace_back(offsets[i].first, write_offset);
 
-    write_offset += sizeof(uint32_t) + offs.size() * sizeof(uint64_t);
+    auto count = static_cast<uint32_t>(j - i);
+    write_u32(offset_buf, count);
+    for (size_t k = i; k < j; ++k) {
+      write_u64(offset_buf, offsets[k].second);
+    }
+
+    write_offset += sizeof(uint32_t) + count * sizeof(uint64_t);
+    i = j;
   }
   file.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
 }
 
-void write_media(const std::string& path, zip_t* archive, const std::vector<int>& files, ImportResult& result) {
+size_t write_media(const std::string& path, zip_t* archive, const std::vector<int>& files) {
   if (files.empty()) {
-    return;
+    return 0;
   }
 
   std::ofstream media(path + "/media.bin", std::ios::binary);
   setup_stream_exceptions(media);
 
+  size_t media_count = 0;
   std::vector<char> blobs_buf;
   for (int file_index : files) {
     auto media = read_media_by_index(archive, file_index);
@@ -441,9 +469,10 @@ void write_media(const std::string& path, zip_t* archive, const std::vector<int>
     write_u32(blobs_buf, blob_size);
     write_bytes(blobs_buf, media->blob.data(), blob_size);
 
-    result.media_count++;
+    media_count++;
   }
   media.write(blobs_buf.data(), static_cast<std::streamsize>(blobs_buf.size()));
+  return media_count;
 }
 }
 
@@ -484,9 +513,13 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     }
 
     const Files files = get_files(archive);
+    std::future<size_t> media_thread = std::async(std::launch::async, [&path, archive, &files = files.media_files]() {
+      return write_media(path, archive, files);
+    });
+
     std::ofstream blobs(path + "/blobs.bin", std::ios::binary);
     setup_stream_exceptions(blobs);
-    ankerl::unordered_dense::map<std::string, std::vector<uint64_t>> offsets;
+    std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
     write_terms(blobs, offsets, zip_path, files.term_banks, write_offset, result, low_ram);
     write_meta(blobs, offsets, zip_path, files.meta_banks, write_offset, result, low_ram);
@@ -494,33 +527,18 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("empty dictionary");
     }
 
-    std::vector<std::string_view> keys;
-    std::vector<uint64_t> key_offsets;
-    write_offset_index(blobs, offsets, write_offset, keys, key_offsets);
+    std::vector<std::pair<uint64_t, uint64_t>> hash_entries;
+    write_offset_index(blobs, offsets, write_offset, hash_entries);
+    std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
-    hash::mphf phf;
-    phf.build(keys);
-    phf.save(path + "/hash.mph");
+    hash::linear table;
+    table.build(hash_entries);
+    table.save(path + "/hash.table");
+    table.free();
 
-    std::vector<uint64_t> offset_hash_table(keys.size());
-    for (size_t i = 0; i < keys.size(); i++) {
-      auto& key = keys[i];
-      offset_hash_table[phf(key)] = key_offsets[i];
-    }
-    std::ofstream offs(path + "/offsets.bin", std::ios::binary);
-    setup_stream_exceptions(offs);
-    offs.write(reinterpret_cast<const char*>(offset_hash_table.data()),
-               static_cast<std::streamsize>(offset_hash_table.size() * sizeof(uint64_t)));
-
-    ankerl::unordered_dense::map<std::string, std::vector<uint64_t>>().swap(offsets);
-    std::vector<std::string_view>().swap(keys);
-    std::vector<uint64_t>().swap(key_offsets);
-
-    write_media(path, archive, files.media_files, result);
+    result.media_count = media_thread.get();
 
     std::ofstream sui(path + "/.hoshidicts_1", std::ios::binary);
-    setup_stream_exceptions(sui);
-    sui.put(phf.type());
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;

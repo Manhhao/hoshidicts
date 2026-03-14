@@ -2,6 +2,7 @@
 
 #include <utf8.h>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <ranges>

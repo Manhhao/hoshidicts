@@ -1,12 +1,8 @@
-#include <sys/fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <utf8.h>
 
 #include <chrono>
 #include <filesystem>
-#include <print>
+#include <iostream>
 #include <ranges>
 #include <string>
 
@@ -17,13 +13,13 @@
 #include "hoshidicts/query.hpp"
 
 void print_usage(const char* program) {
-  std::println("Usage:");
-  std::println("{} import <path/to/dictionary.zip>", program);
-  std::println("{} deinflect <word>", program);
-  std::println("{} preprocess <word>", program);
-  std::println("{} query <path/to/dictionary> <word>", program);
-  std::println("{} lookup <path/to/dictionary> <lookup_string>", program);
-  std::println("{} freq <path/to/dictionary> <word>", program);
+  std::cout << std::format("Usage:");
+  std::cout << std::format("{} import <path/to/dictionary.zip>\n", program);
+  std::cout << std::format("{} deinflect <word>\n", program);
+  std::cout << std::format("{} preprocess <word>\n", program);
+  std::cout << std::format("{} query <path/to/dictionary> <word>\n", program);
+  std::cout << std::format("{} lookup <path/to/dictionary> <lookup_string>\n", program);
+  std::cout << std::format("{} freq <path/to/dictionary> <word>\n", program);
 }
 
 void cmd_import(const std::string& path) {
@@ -35,15 +31,15 @@ void cmd_import(const std::string& path) {
   ImportResult result = dictionary_importer::import(path, output_dir);
 
   if (result.success) {
-    std::println("title: {}", result.title);
-    std::println("term_count: {}", result.term_count);
-    std::println("meta_count: {}", result.meta_count);
-    std::println("tag_count: {}", result.tag_count);
-    std::println("media_count: {}", result.media_count);
+    std::cout << std::format("title: {}\n", result.title);
+    std::cout << std::format("term_count: {}\n", result.term_count);
+    std::cout << std::format("meta_count: {}\n", result.meta_count);
+    std::cout << std::format("tag_count: {}\n", result.tag_count);
+    std::cout << std::format("media_count: {}\n", result.media_count);
   } else {
-    std::println(stderr, "could not import dictionary:");
+    std::cout << std::format("could not import dictionary:\n");
     for (const auto& error : result.errors) {
-      std::println(stderr, " {}", error);
+      std::cout << std::format(" {}\n", error);
     }
   }
 }
@@ -52,17 +48,18 @@ void cmd_deinflect(const std::string& inflected) {
   Deinflector deinflector;
   auto results = deinflector.deinflect(inflected);
 
-  std::println("deinflections for: {} length: {}", inflected, utf8::distance(inflected.begin(), inflected.end()));
-  std::println("found {} candidates\n", results.size());
+  std::cout << std::format("deinflections for: {} length: {}\n", inflected,
+                           utf8::distance(inflected.begin(), inflected.end()));
+  std::cout << std::format("found {} candidates\n\n", results.size());
 
   for (const auto& r : results) {
-    std::println("{} (conditions: {})", r.text, r.conditions);
+    std::cout << std::format("{} (conditions: {})", r.text, r.conditions);
     if (!r.trace.empty()) {
-      std::print("  ");
+      std::cout << std::format("  ");
       for (size_t i = 0; i < r.trace.size(); ++i) {
-        std::print("{}{}", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
+        std::cout << std::format("{}{}\n", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
       }
-      std::println("");
+      std::cout << std::format("\n");
     }
   }
 }
@@ -70,11 +67,11 @@ void cmd_deinflect(const std::string& inflected) {
 void cmd_preprocess(const std::string& text) {
   auto results = text_processor::process(text);
 
-  std::println("preproccesing for: {} length: {}", text, utf8::distance(text.begin(), text.end()));
-  std::println("found {} variants", results.size());
+  std::cout << std::format("preproccesing for: {} length: {}\n", text, utf8::distance(text.begin(), text.end()));
+  std::cout << std::format("found {} variants\n", results.size());
 
   for (const auto& r : results) {
-    std::println("{}", r.text);
+    std::cout << std::format("{}\n", r.text);
   }
 }
 
@@ -83,16 +80,17 @@ void cmd_query(const std::string& db_path, const std::string& expression) {
   dict_query.add_term_dict(db_path);
   auto result = dict_query.query(expression);
 
-  std::println("query results for: {} length: {}", expression, utf8::distance(expression.begin(), expression.end()));
-  std::println("{} entries", result.size());
+  std::cout << std::format("query results for: {} length: {}\n", expression,
+                           utf8::distance(expression.begin(), expression.end()));
+  std::cout << std::format("{} entries\n", result.size());
   for (const auto& r : result) {
-    std::println("---------------------------------------------------------------");
-    std::println("{} {} {}", r.expression, r.reading, r.rules);
-    std::println("{} glossary entries", r.glossaries.size());
+    std::cout << std::format("---------------------------------------------------------------");
+    std::cout << std::format("{} {} {}\n", r.expression, r.reading, r.rules);
+    std::cout << std::format("{} glossary entries\n", r.glossaries.size());
     for (const auto& g : r.glossaries) {
-      std::println("------");
-      std::println("{}", g.dict_name);
-      std::println("{}", g.glossary);
+      std::cout << std::format("------\n");
+      std::cout << std::format("{}\n", g.dict_name);
+      std::cout << std::format("{}\n", g.glossary);
     }
   }
 }
@@ -104,16 +102,16 @@ void cmd_freq(const std::string& path, const std::string& expression, const std:
   DictionaryQuery query;
   query.add_freq_dict(path);
   query.query_freq(terms);
-  std::println("frequency entries for: {}", expression);
+  std::cout << std::format("frequency entries for: {}\n", expression);
   int count = 0;
   for (auto& freq : terms[0].frequencies) {
-    std::println("dict: {}", freq.dict_name);
+    std::cout << std::format("dict: {}\n", freq.dict_name);
     for (auto& freq_entry : freq.frequencies) {
-      std::println("val: {} display_val: {}", freq_entry.value, freq_entry.display_value);
+      std::cout << std::format("val: {} display_val: {}\n", freq_entry.value, freq_entry.display_value);
       count++;
     }
   }
-  std::println("count: {}", count);
+  std::cout << std::format("count: {}\n", count);
 }
 
 void cmd_lookup(const std::vector<std::string>& db_paths, const std::string& lookup_string, int max_results = 8,
@@ -126,31 +124,32 @@ void cmd_lookup(const std::vector<std::string>& db_paths, const std::string& loo
   Lookup lookup(dict_query, deinflect);
   auto result = lookup.lookup(lookup_string, max_results, scan_length);
 
-  std::println("lookup results for: {} max_results: {} scan_length: {}", lookup_string, max_results, scan_length);
-  std::println("{} results", result.size());
+  std::cout << std::format("lookup results for: {} max_results: {} scan_length: {}\n", lookup_string, max_results,
+                           scan_length);
+  std::cout << std::format("{} results\n", result.size());
 
   for (const auto& r : result) {
-    std::println("---------------------------------------------------------------");
-    std::println("{}", r.matched);
+    std::cout << std::format("---------------------------------------------------------------\n");
+    std::cout << std::format("{}\n", r.matched);
     if (!r.trace.empty()) {
-      std::print("  ");
+      std::cout << std::format("  ");
       for (size_t i = 0; i < r.trace.size(); ++i) {
-        std::print("{}{}", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
+        std::cout << std::format("{}{}\n", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
       }
-      std::println("");
+      std::cout << std::format("");
     }
-    std::println("{} {}", r.term.expression, r.term.reading);
+    std::cout << std::format("{} {}\n", r.term.expression, r.term.reading);
     for (const auto& g : r.term.glossaries) {
-      std::println("------");
-      std::println("{}", g.dict_name);
-      std::println("{}", g.glossary);
+      std::cout << std::format("------\n");
+      std::cout << std::format("{}\n", g.dict_name);
+      std::cout << std::format("{}\n", g.glossary);
     }
   }
 
-  std::println("styles: ");
+  std::cout << std::format("styles: \n");
   for (const auto& s : dict_query.get_styles()) {
-    std::println("{}", s.dict_name);
-    std::println("{}", s.styles);
+    std::cout << std::format("{}\n", s.dict_name);
+    std::cout << std::format("{}\n", s.styles);
   }
 }
 
@@ -186,7 +185,7 @@ int main(int argc, char* argv[]) {
 
   const auto end = std::chrono::steady_clock::now();
   std::chrono::duration<double, std::milli> duration = end - begin;
-  std::println("runtime: {}ms", duration.count());
+  std::cout << std::format("runtime: {}ms", duration.count());
 
   return 0;
 }
