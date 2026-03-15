@@ -13,7 +13,7 @@
 #include "hoshidicts/query.hpp"
 
 void print_usage(const char* program) {
-  std::cout << std::format("Usage:");
+  std::cout << std::format("Usage:\n");
   std::cout << std::format("{} import <path/to/dictionary.zip>\n", program);
   std::cout << std::format("{} deconjugate <word>\n", program);
   std::cout << std::format("{} preprocess <word>\n", program);
@@ -89,7 +89,7 @@ void cmd_query(const std::string& db_path, const std::string& expression) {
                            utf8::distance(expression.begin(), expression.end()));
   std::cout << std::format("{} entries\n", result.size());
   for (const auto& r : result) {
-    std::cout << std::format("---------------------------------------------------------------");
+    std::cout << std::format("---------------------------------------------------------------\n");
     std::cout << std::format("{} {} {}\n", r.expression, r.reading, r.rules);
     std::cout << std::format("{} glossary entries\n", r.glossaries.size());
     for (const auto& g : r.glossaries) {
@@ -141,7 +141,7 @@ void cmd_lookup(const std::vector<std::string>& db_paths, const std::string& loo
       for (size_t i = 0; i < r.process.size(); ++i) {
         std::cout << std::format("{}{}", r.process[i], i < r.process.size() - 1 ? " -> " : "");
       }
-      std::cout << std::format("");
+      std::cout << "\n";
     }
     std::cout << std::format("{} {}\n", r.term.expression, r.term.reading);
     for (const auto& g : r.term.glossaries) {
@@ -190,7 +190,7 @@ int main(int argc, char* argv[]) {
 
   const auto end = std::chrono::steady_clock::now();
   std::chrono::duration<double, std::milli> duration = end - begin;
-  std::cout << std::format("runtime: {}ms", duration.count());
+  std::cout << std::format("runtime: {}ms\n", duration.count());
 
   return 0;
 }

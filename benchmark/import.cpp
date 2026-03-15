@@ -9,7 +9,7 @@
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::cout << std::format("{} <zip_path> <iterations>", argv[0]);
+    std::cout << std::format("{} <zip_path> <iterations>\n", argv[0]);
     return 1;
   }
 
