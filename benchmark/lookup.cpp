@@ -12,7 +12,7 @@
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::cout << std::format("{} <dict_path> <word> <iterations>", argv[0]);
+    std::cout << std::format("{} <dict_path> <word> <iterations>\n", argv[0]);
     return 1;
   }
 
@@ -43,11 +43,11 @@ int main(int argc, char** argv) {
   const double total = std::accumulate(durations.begin(), durations.end(), 0.0);
   const double average = total / durations.size();
 
-  std::cout << std::format("word: {} iterations: {}", word, iterations);
-  std::cout << std::format("total: {:.2f}ms", total);
-  std::cout << std::format("avg: {:.2f}ms", average);
-  std::cout << std::format("min: {:.2f}ms", *min);
-  std::cout << std::format("max: {:.2f}ms", *max);
+  std::cout << std::format("word: {} iterations: {}\n", word, iterations);
+  std::cout << std::format("total: {:.2f}ms\n", total);
+  std::cout << std::format("avg: {:.2f}ms\n", average);
+  std::cout << std::format("min: {:.2f}ms\n", *min);
+  std::cout << std::format("max: {:.2f}ms\n", *max);
 
   return 0;
 }
