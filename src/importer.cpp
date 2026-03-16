@@ -453,25 +453,38 @@ size_t write_media(const std::string& path, zip_t* archive, const std::vector<in
   }
 
   std::ofstream media(path + "/media.bin", std::ios::binary);
+  std::ofstream media_idx(path + "/media.idx", std::ios::binary);
   setup_stream_exceptions(media);
+  setup_stream_exceptions(media_idx);
 
   size_t media_count = 0;
   std::vector<char> blobs_buf;
+  std::vector<std::pair<std::string, uint32_t>> index_entries;
   for (int file_index : files) {
-    auto media = read_media_by_index(archive, file_index);
-    if (!media.has_value()) {
+    auto media_file = read_media_by_index(archive, file_index);
+    if (!media_file.has_value()) {
       continue;
     }
 
-    const auto blob_size = media->blob.size();
-    write_u16(blobs_buf, media->path.size());
-    write_str(blobs_buf, media->path);
-    write_u32(blobs_buf, blob_size);
-    write_bytes(blobs_buf, media->blob.data(), blob_size);
+    uint32_t record_start = blobs_buf.size();
+    write_u16(blobs_buf, media_file->path.size());
+    write_str(blobs_buf, media_file->path);
+    write_u32(blobs_buf, media_file->blob.size());
+    write_bytes(blobs_buf, media_file->blob.data(), media_file->blob.size());
 
+    index_entries.emplace_back(std::move(media_file->path), record_start);
     media_count++;
   }
+
+  std::ranges::sort(index_entries);
+  std::vector<char> index_buf;
+  write_u32(index_buf, index_entries.size());
+  for (const auto& [name, offset] : index_entries) {
+    write_u64(index_buf, offset);
+  }
+
   media.write(blobs_buf.data(), static_cast<std::streamsize>(blobs_buf.size()));
+  media_idx.write(index_buf.data(), static_cast<std::streamsize>(index_buf.size()));
   return media_count;
 }
 }

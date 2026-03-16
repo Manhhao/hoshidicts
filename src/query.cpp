@@ -11,14 +11,16 @@
 #endif
 #include <zstd.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
-#include <mutex>
 #include <ranges>
 #include <string_view>
+#include <vector>
 
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
@@ -112,6 +114,39 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
   addr += len;
   return result;
 }
+
+namespace migration {
+bool write_media_index(const std::string& dict_path, const uint8_t* media_ptr, size_t media_size) {
+  if (!media_ptr || media_size == 0) {
+    return false;
+  }
+
+  std::vector<std::pair<std::string_view, uint32_t>> index_entries;
+  const uint8_t* addr = media_ptr;
+  const uint8_t* eof = addr + media_size;
+  while (addr < eof) {
+    uint32_t record_start = addr - media_ptr;
+    uint16_t path_size = read_u16(addr);
+    std::string_view media_path = read_str(addr, path_size);
+    uint32_t blob_size = read_u32(addr);
+    index_entries.emplace_back(media_path, record_start);
+    addr += blob_size;
+  }
+
+  std::ranges::sort(index_entries);
+  uint32_t count = index_entries.size();
+  std::vector<char> index_buf(sizeof(uint32_t) + index_entries.size() * sizeof(uint64_t));
+  std::memcpy(index_buf.data(), &count, sizeof(uint32_t));
+  for (size_t i = 0; i < index_entries.size(); ++i) {
+    uint64_t offset = index_entries[i].second;
+    std::memcpy(index_buf.data() + sizeof(uint32_t) + i * sizeof(uint64_t), &offset, sizeof(uint64_t));
+  }
+
+  std::ofstream out(dict_path + "/media.idx", std::ios::binary);
+  out.write(index_buf.data(), static_cast<std::streamsize>(index_buf.size()));
+  return true;
+}
+}
 }
 
 struct DictionaryQuery::DictionaryData {
@@ -122,30 +157,14 @@ struct DictionaryQuery::DictionaryData {
   size_t hash_table_size = 0;
   uint8_t* media = nullptr;
   size_t media_size = 0;
-  mutable std::once_flag media_index_once;
-  mutable ankerl::unordered_dense::map<std::string_view, std::pair<uint32_t, uint32_t>> media_index;
-
-  void build_media_index() const {
-    if (!media) {
-      return;
-    }
-
-    const uint8_t* addr = media;
-    const uint8_t* eof = addr + media_size;
-    while (addr < eof) {
-      uint16_t path_size = read_u16(addr);
-      std::string_view media_path = read_str(addr, path_size);
-      uint32_t blob_size = read_u32(addr);
-
-      media_index.emplace(media_path, std::pair<uint32_t, uint32_t>{blob_size, static_cast<uint32_t>(addr - media)});
-      addr += blob_size;
-    }
-  }
+  uint8_t* media_index = nullptr;
+  size_t media_index_size = 0;
 
   ~DictionaryData() {
     unmap_file(blobs, blobs_size);
     unmap_file(hash_table, hash_table_size);
     unmap_file(media, media_size);
+    unmap_file(media_index, media_index_size);
   }
 };
 
@@ -194,6 +213,18 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   if (media) {
     dict.data->media_size = media_size;
     dict.data->media = reinterpret_cast<uint8_t*>(media);
+
+    auto [media_index, media_index_size] = map_file(path + "/media.idx");
+    if (media_index) {
+      dict.data->media_index_size = media_index_size;
+      dict.data->media_index = reinterpret_cast<uint8_t*>(media_index);
+    } else if (dict.data->media && migration::write_media_index(path, dict.data->media, dict.data->media_size)) {
+      auto [migrated_index, migrated_index_size] = map_file(path + "/media.idx");
+      if (migrated_index) {
+        dict.data->media_index_size = migrated_index_size;
+        dict.data->media_index = reinterpret_cast<uint8_t*>(migrated_index);
+      }
+    }
   }
 
   switch (type) {
@@ -421,16 +452,34 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
       continue;
     }
 
-    std::call_once(data->media_index_once, [data_ptr = data.get()]() { data_ptr->build_media_index(); });
-
-    auto it = data->media_index.find(media_path);
-    if (it == data->media_index.end()) {
+    if (!data->media || !data->media_index) {
       return {};
     }
 
-    const auto [size, offset] = it->second;
-    const char* media_data = reinterpret_cast<const char*>(data->media + offset);
-    return {media_data, media_data + size};
+    const uint8_t* ptr = data->media_index;
+    uint32_t count = read_u32(ptr);
+
+    size_t left = 0;
+    size_t right = count;
+    while (left < right) {
+      const size_t mid = left + (right - left) / 2;
+      uint64_t record_offset;
+      std::memcpy(&record_offset, data->media_index + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
+
+      const uint8_t* record = data->media + record_offset;
+      uint16_t path_size = read_u16(record);
+      std::string_view indexed_path = read_str(record, path_size);
+      if (indexed_path < media_path) {
+        left = mid + 1;
+      } else if (indexed_path > media_path) {
+        right = mid;
+      } else {
+        uint32_t blob_size = read_u32(record);
+        const char* blob_data = reinterpret_cast<const char*>(record);
+        return {blob_data, blob_data + blob_size};
+      }
+    }
+    return {};
   }
   return {};
 }
