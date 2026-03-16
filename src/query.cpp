@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <string_view>
 
@@ -121,7 +122,25 @@ struct DictionaryQuery::DictionaryData {
   size_t hash_table_size = 0;
   uint8_t* media = nullptr;
   size_t media_size = 0;
-  ankerl::unordered_dense::map<std::string_view, std::pair<uint32_t, uint32_t>> media_index;
+  mutable std::once_flag media_index_once;
+  mutable ankerl::unordered_dense::map<std::string_view, std::pair<uint32_t, uint32_t>> media_index;
+
+  void build_media_index() const {
+    if (!media) {
+      return;
+    }
+
+    const uint8_t* addr = media;
+    const uint8_t* eof = addr + media_size;
+    while (addr < eof) {
+      uint16_t path_size = read_u16(addr);
+      std::string_view media_path = read_str(addr, path_size);
+      uint32_t blob_size = read_u32(addr);
+
+      media_index.emplace(media_path, std::pair<uint32_t, uint32_t>{blob_size, static_cast<uint32_t>(addr - media)});
+      addr += blob_size;
+    }
+  }
 
   ~DictionaryData() {
     unmap_file(blobs, blobs_size);
@@ -175,21 +194,6 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   if (media) {
     dict.data->media_size = media_size;
     dict.data->media = reinterpret_cast<uint8_t*>(media);
-  }
-
-  if (dict.data->media_size > 0) {
-    const uint8_t* addr = dict.data->media;
-    const uint8_t* eof = addr + dict.data->media_size;
-    while (addr < eof) {
-      uint16_t path_size = read_u16(addr);
-      std::string_view media_path = read_str(addr, path_size);
-      uint32_t media_size = read_u32(addr);
-
-      dict.data->media_index.emplace(
-          media_path, std::pair<uint32_t, uint32_t>{media_size, static_cast<uint32_t>(addr - dict.data->media)});
-
-      addr += media_size;
-    }
   }
 
   switch (type) {
@@ -416,6 +420,8 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
     if (name != dict_name) {
       continue;
     }
+
+    std::call_once(data->media_index_once, [data_ptr = data.get()]() { data_ptr->build_media_index(); });
 
     auto it = data->media_index.find(media_path);
     if (it == data->media_index.end()) {
