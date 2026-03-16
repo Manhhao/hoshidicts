@@ -121,12 +121,14 @@ struct DictionaryQuery::DictionaryData {
   size_t hash_table_size = 0;
   uint8_t* media = nullptr;
   size_t media_size = 0;
-  ankerl::unordered_dense::map<std::string_view, std::pair<uint32_t, uint32_t>> media_index;
+  uint8_t* media_index = nullptr;
+  size_t media_index_size = 0;
 
   ~DictionaryData() {
     unmap_file(blobs, blobs_size);
     unmap_file(hash_table, hash_table_size);
     unmap_file(media, media_size);
+    unmap_file(media_index, media_index_size);
   }
 };
 
@@ -175,20 +177,11 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   if (media) {
     dict.data->media_size = media_size;
     dict.data->media = reinterpret_cast<uint8_t*>(media);
-  }
 
-  if (dict.data->media_size > 0) {
-    const uint8_t* addr = dict.data->media;
-    const uint8_t* eof = addr + dict.data->media_size;
-    while (addr < eof) {
-      uint16_t path_size = read_u16(addr);
-      std::string_view media_path = read_str(addr, path_size);
-      uint32_t media_size = read_u32(addr);
-
-      dict.data->media_index.emplace(
-          media_path, std::pair<uint32_t, uint32_t>{media_size, static_cast<uint32_t>(addr - dict.data->media)});
-
-      addr += media_size;
+    auto [media_index, media_index_size] = map_file(path + "/media.idx");
+    if (media_index) {
+      dict.data->media_index_size = media_index_size;
+      dict.data->media_index = reinterpret_cast<uint8_t*>(media_index);
     }
   }
 
@@ -417,14 +410,34 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
       continue;
     }
 
-    auto it = data->media_index.find(media_path);
-    if (it == data->media_index.end()) {
+    if (!data->media || !data->media_index) {
       return {};
     }
 
-    const auto [size, offset] = it->second;
-    const char* media_data = reinterpret_cast<const char*>(data->media + offset);
-    return {media_data, media_data + size};
+    const uint8_t* ptr = data->media_index;
+    uint32_t count = read_u32(ptr);
+
+    size_t left = 0;
+    size_t right = count;
+    while (left < right) {
+      const size_t mid = left + (right - left) / 2;
+      uint64_t record_offset;
+      std::memcpy(&record_offset, data->media_index + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
+
+      const uint8_t* record = data->media + record_offset;
+      uint16_t path_size = read_u16(record);
+      std::string_view indexed_path = read_str(record, path_size);
+      if (indexed_path < media_path) {
+        left = mid + 1;
+      } else if (indexed_path > media_path) {
+        right = mid;
+      } else {
+        uint32_t blob_size = read_u32(record);
+        const char* blob_data = reinterpret_cast<const char*>(record);
+        return {blob_data, blob_data + blob_size};
+      }
+    }
+    return {};
   }
   return {};
 }
