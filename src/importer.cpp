@@ -2,7 +2,6 @@
 
 #include <ankerl/unordered_dense.h>
 #include <xxh3.h>
-#include <zip.h>
 #include <zstd.h>
 
 #include <algorithm>
@@ -21,6 +20,7 @@
 
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
+#include "zip/zip.hpp"
 
 namespace {
 struct Files {
@@ -38,110 +38,26 @@ struct ProcessedFile {
   size_t count = 0;
 };
 
-struct MediaFile {
-  std::string path;
-  std::vector<char> blob;
-};
-
 void setup_stream_exceptions(std::ofstream& stream) { stream.exceptions(std::ios::failbit | std::ios::badbit); }
 
-std::string read_file_by_index(zip_t* archive, int index) {
-  if (zip_entry_openbyindex(archive, index) != 0) {
-    return "";
-  }
-
-  const size_t size = zip_entry_size(archive);
-  std::string buffer;
-  buffer.resize(size);
-  ssize_t bytes_read = 0;
-  if (size > 0) {
-    bytes_read = zip_entry_noallocread(archive, buffer.data(), size);
-  }
-  zip_entry_close(archive);
-
-  if (bytes_read < 0) {
-    return "";
-  }
-
-  return buffer;
-}
-
-std::string read_file_by_name(zip_t* archive, const char* name) {
-  if (zip_entry_open(archive, name) != 0) {
-    return "";
-  }
-
-  const size_t size = zip_entry_size(archive);
-  std::string buffer;
-  buffer.resize(size);
-  ssize_t bytes_read = 0;
-  if (size > 0) {
-    bytes_read = zip_entry_noallocread(archive, buffer.data(), size);
-  }
-  zip_entry_close(archive);
-
-  if (bytes_read < 0) {
-    return "";
-  }
-
-  return buffer;
-}
-
-std::optional<MediaFile> read_media_by_index(zip_t* archive, int index) {
-  if (zip_entry_openbyindex(archive, index) != 0) {
-    return std::nullopt;
-  }
-
-  MediaFile out;
-  const size_t size = zip_entry_size(archive);
-  out.path = zip_entry_name(archive);
-  out.blob.resize(size);
-  ssize_t bytes_read = 0;
-  if (size > 0) {
-    bytes_read = zip_entry_noallocread(archive, out.blob.data(), size);
-  }
-  zip_entry_close(archive);
-
-  if (bytes_read < 0) {
-    return std::nullopt;
-  }
-
-  return out;
-}
-
-Files get_files(zip_t* archive) {
+Files get_files(const Zip& zip) {
   Files files;
-  const ssize_t num_entries = zip_entries_total(archive);
-  if (num_entries < 0) {
-    return files;
-  }
-
-  for (int i = 0; i < num_entries; ++i) {
-    if (zip_entry_openbyindex(archive, i) != 0) {
+  for (int i = 0; i < static_cast<int>(zip.entries.size()); i++) {
+    const auto& name = zip.entries[i].name;
+    if (name.empty() || name.back() == '/') {
       continue;
     }
 
-    if (zip_entry_isdir(archive) == 1) {
-      zip_entry_close(archive);
-      continue;
+    if (name.starts_with("term_bank_")) {
+      files.term_banks.push_back(i);
+    } else if (name.starts_with("term_meta_bank_")) {
+      files.meta_banks.push_back(i);
+    } else if (name.starts_with("tag_bank_")) {
+      files.tag_banks.push_back(i);
+    } else if (!(name == "styles.css" || name == "index.json")) {
+      files.media_files.push_back(i);
     }
-
-    const char* raw_name = zip_entry_name(archive);
-    if (raw_name != nullptr) {
-      const std::string_view name(raw_name);
-      if (name.starts_with("term_bank_")) {
-        files.term_banks.push_back(i);
-      } else if (name.starts_with("term_meta_bank_")) {
-        files.meta_banks.push_back(i);
-      } else if (name.starts_with("tag_bank_")) {
-        files.tag_banks.push_back(i);
-      } else if (!(name == "styles.css" || name == "index.json")) {
-        files.media_files.push_back(i);
-      }
-    }
-    zip_entry_close(archive);
   }
-
   return files;
 }
 
@@ -311,7 +227,7 @@ ProcessedFile process_meta_bank(const std::string& content) {
   return processed;
 }
 
-void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const std::string& zip_path,
+void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
                  const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
@@ -355,15 +271,8 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   };
 
   for (int file_index : files) {
-    threads.push_back(std::async(std::launch::async, [&zip_path, file_index]() {
-      zip_t* archive = zip_open(zip_path.c_str(), 0, 'r');
-      if (!archive) {
-        return ProcessedFile{};
-      }
-      std::string content = read_file_by_index(archive, file_index);
-      zip_close(archive);
-      return process_term_bank(content);
-    }));
+    threads.push_back(
+        std::async(std::launch::async, [&zip, file_index]() { return process_term_bank(zip.read(file_index)); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -377,7 +286,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   }
 }
 
-void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const std::string& zip_path,
+void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
@@ -401,15 +310,8 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   };
 
   for (int file_index : files) {
-    threads.push_back(std::async(std::launch::async, [&zip_path, file_index]() {
-      zip_t* archive = zip_open(zip_path.c_str(), 0, 'r');
-      if (!archive) {
-        return ProcessedFile{};
-      }
-      std::string content = read_file_by_index(archive, file_index);
-      zip_close(archive);
-      return process_meta_bank(content);
-    }));
+    threads.push_back(
+        std::async(std::launch::async, [&zip, file_index]() { return process_meta_bank(zip.read(file_index)); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -423,8 +325,8 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   }
 }
 
-void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
-                        std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
+std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
+                                     std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
   std::vector<char> offset_buf;
   radix_sort(offsets);
   for (size_t i = 0; i < offsets.size();) {
@@ -444,10 +346,10 @@ void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint
     write_offset += sizeof(uint32_t) + count * sizeof(uint64_t);
     i = j;
   }
-  file.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
+  return offset_buf;
 }
 
-size_t write_media(const std::string& path, zip_t* archive, const std::vector<int>& files) {
+size_t write_media(const std::string& path, const Zip& zip, const std::vector<int>& files) {
   if (files.empty()) {
     return 0;
   }
@@ -461,7 +363,7 @@ size_t write_media(const std::string& path, zip_t* archive, const std::vector<in
   std::vector<char> blobs_buf;
   std::vector<std::pair<std::string, uint32_t>> index_entries;
   for (int file_index : files) {
-    auto media_file = read_media_by_index(archive, file_index);
+    auto media_file = zip.read_media(file_index);
     if (!media_file.has_value()) {
       continue;
     }
@@ -491,16 +393,19 @@ size_t write_media(const std::string& path, zip_t* archive, const std::vector<in
 
 ImportResult dictionary_importer::import(const std::string& zip_path, const std::string& output_dir, bool low_ram) {
   ImportResult result;
-  zip_t* archive = nullptr;
   try {
-    archive = zip_open(zip_path.c_str(), 0, 'r');
-    if (!archive) {
+    Zip zip;
+    if (!zip.load(zip_path)) {
       throw std::runtime_error("failed to open zip");
     }
 
-    std::string index_content = read_file_by_name(archive, "index.json");
+    int index_idx = zip.find("index.json");
+    if (index_idx < 0) {
+      throw std::runtime_error("could not find index.json");
+    }
+    std::string index_content = zip.read(index_idx);
     if (index_content.empty()) {
-      throw std::runtime_error("could not find or read index.json");
+      throw std::runtime_error("could not read index.json");
     }
 
     Index index;
@@ -518,36 +423,43 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("failed to write index.json");
     }
 
-    std::string styles = read_file_by_name(archive, "styles.css");
-    if (!styles.empty()) {
-      std::ofstream styles_file(path + "/styles.css", std::ios::binary);
-      setup_stream_exceptions(styles_file);
-      styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
+    int styles_idx = zip.find("styles.css");
+    if (styles_idx >= 0) {
+      std::string styles = zip.read(styles_idx);
+      if (!styles.empty()) {
+        std::ofstream styles_file(path + "/styles.css", std::ios::binary);
+        setup_stream_exceptions(styles_file);
+        styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
+      }
     }
 
-    const Files files = get_files(archive);
-    std::future<size_t> media_thread = std::async(std::launch::async, [&path, archive, &files = files.media_files]() {
-      return write_media(path, archive, files);
-    });
+    const Files files = get_files(zip);
+    std::future<size_t> media_thread =
+        std::async(std::launch::async, [&path, &zip, &files]() { return write_media(path, zip, files.media_files); });
 
     std::ofstream blobs(path + "/blobs.bin", std::ios::binary);
     setup_stream_exceptions(blobs);
     std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
-    write_terms(blobs, offsets, zip_path, files.term_banks, write_offset, result, low_ram);
-    write_meta(blobs, offsets, zip_path, files.meta_banks, write_offset, result, low_ram);
+    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
+    write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
     if (offsets.empty()) {
       throw std::runtime_error("empty dictionary");
     }
 
     std::vector<std::pair<uint64_t, uint64_t>> hash_entries;
-    write_offset_index(blobs, offsets, write_offset, hash_entries);
+    auto offset_buf = build_offset_index(offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
-    hash::linear table;
-    table.build(hash_entries);
-    table.save(path + "/hash.table");
-    table.free();
+    auto hash_thread = std::async(std::launch::async, [&hash_entries, &path]() {
+      hash::linear table;
+      table.build(hash_entries);
+      table.save(path + "/hash.table");
+      table.free();
+    });
+
+    blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
+    hash_thread.get();
 
     result.media_count = media_thread.get();
 
@@ -556,10 +468,6 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
   } catch (const std::exception& e) {
     result.success = false;
     result.errors.emplace_back(e.what());
-  }
-
-  if (archive) {
-    zip_close(archive);
   }
 
   if (!result.success && !result.title.empty()) {

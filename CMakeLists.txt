@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 cmake_policy(SET CMP0077 NEW)
 
-project(hoshidicts LANGUAGES CXX)
+project(hoshidicts LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,24 +12,18 @@ set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "")
 set(ZSTD_BUILD_STATIC ON CACHE BOOL "")
 
-add_subdirectory(external/zip)
+set(LIBDEFLATE_BUILD_SHARED_LIB OFF CACHE BOOL "")
+set(LIBDEFLATE_BUILD_GZIP OFF CACHE BOOL "")
+
 add_subdirectory(external/glaze)
 add_subdirectory(external/zstd)
 add_subdirectory(external/unordered_dense)
-
-target_compile_definitions(zip PRIVATE
-    MINIZ_DISABLE_ZIP_READER_CRC32_CHECKS
-    MINIZ_NO_TIME
-)
-
-target_compile_options(zip PRIVATE
-    -Wno-unknown-warning-option
-    -Wno-error=stringop-truncation
-)
+add_subdirectory(external/libdeflate)
 
 add_library(hoshidicts
     src/hash/hash.cpp
     src/importer.cpp
+    src/zip/zip.cpp
     src/json/yomitan_parser.cpp
     src/text_processor/text_processor.cpp
     src/deinflector.cpp
@@ -44,9 +38,9 @@ target_include_directories(hoshidicts PUBLIC
 )
 
 target_link_libraries(hoshidicts PRIVATE
-    zip
     glaze::glaze
     libzstd_static
+    libdeflate_static
     unordered_dense
 )
 
