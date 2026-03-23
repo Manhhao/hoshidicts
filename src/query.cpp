@@ -1,14 +1,6 @@
 #include "hoshidicts/query.hpp"
 
 #include <ankerl/unordered_dense.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 #include <zstd.h>
 
 #include <algorithm>
@@ -24,68 +16,9 @@
 
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
+#include "memory/memory.hpp"
 
 namespace {
-std::pair<void*, size_t> map_file(const std::string& path) {
-#ifdef _WIN32
-  HANDLE file =
-      CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) {
-    return {};
-  }
-
-  LARGE_INTEGER file_size;
-  if (!GetFileSizeEx(file, &file_size)) {
-    CloseHandle(file);
-    return {};
-  }
-
-  HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
-  CloseHandle(file);
-  if (!mapping) {
-    return {};
-  }
-
-  void* data = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-  CloseHandle(mapping);
-  if (!data) {
-    return {};
-  }
-
-  return {data, static_cast<size_t>(file_size.QuadPart)};
-#else
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd == -1) {
-    return {};
-  }
-
-  struct stat st{};
-  if (fstat(fd, &st) != 0) {
-    close(fd);
-    return {};
-  }
-
-  void* data = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-  close(fd);
-  if (data == MAP_FAILED) {
-    return {};
-  }
-
-  return {data, static_cast<size_t>(st.st_size)};
-#endif
-}
-
-void unmap_file(void* data, size_t size) {
-  if (!data) {
-    return;
-  }
-#ifdef _WIN32
-  UnmapViewOfFile(data);
-#else
-  munmap(data, size);
-#endif
-}
-
 template <typename T>
 T read_val(const uint8_t*& addr) {
   T val;
@@ -136,20 +69,16 @@ bool write_media_index(const std::string& dict_path, const uint8_t* media_ptr, s
 
 struct DictionaryQuery::DictionaryData {
   hash::linear table;
-  uint8_t* blobs = nullptr;
-  size_t blobs_size = 0;
-  uint8_t* hash_table = nullptr;
-  size_t hash_table_size = 0;
-  uint8_t* media = nullptr;
-  size_t media_size = 0;
-  uint8_t* media_index = nullptr;
-  size_t media_index_size = 0;
+  memory::mapped_file blobs;
+  memory::mapped_file hash_table;
+  memory::mapped_file media;
+  memory::mapped_file media_index;
 
   ~DictionaryData() {
-    unmap_file(blobs, blobs_size);
-    unmap_file(hash_table, hash_table_size);
-    unmap_file(media, media_size);
-    unmap_file(media_index, media_index_size);
+    memory::unmap(blobs);
+    memory::unmap(hash_table);
+    memory::unmap(media);
+    memory::unmap(media_index);
   }
 };
 
@@ -179,36 +108,23 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
 
   dict.data = std::make_unique<DictionaryData>();
 
-  auto [hash_table, hash_table_size] = map_file(path + "/hash.table");
-  if (!hash_table) {
+  dict.data->hash_table = memory::map_rd(path + "/hash.table");
+  if (!dict.data->hash_table) {
     return;
   }
-  dict.data->hash_table_size = hash_table_size;
-  dict.data->hash_table = reinterpret_cast<uint8_t*>(hash_table);
-  dict.data->table.load(hash_table);
+  dict.data->table.load(dict.data->hash_table.data);
 
-  auto [blobs, blobs_size] = map_file(path + "/blobs.bin");
-  if (!blobs) {
+  dict.data->blobs = memory::map_rd(path + "/blobs.bin");
+  if (!dict.data->blobs) {
     return;
   }
-  dict.data->blobs_size = blobs_size;
-  dict.data->blobs = reinterpret_cast<uint8_t*>(blobs);
 
-  auto [media, media_size] = map_file(path + "/media.bin");
-  if (media) {
-    dict.data->media_size = media_size;
-    dict.data->media = reinterpret_cast<uint8_t*>(media);
-
-    auto [media_index, media_index_size] = map_file(path + "/media.idx");
-    if (media_index) {
-      dict.data->media_index_size = media_index_size;
-      dict.data->media_index = reinterpret_cast<uint8_t*>(media_index);
-    } else if (dict.data->media && migration::write_media_index(path, dict.data->media, dict.data->media_size)) {
-      auto [migrated_index, migrated_index_size] = map_file(path + "/media.idx");
-      if (migrated_index) {
-        dict.data->media_index_size = migrated_index_size;
-        dict.data->media_index = reinterpret_cast<uint8_t*>(migrated_index);
-      }
+  dict.data->media = memory::map_rd(path + "/media.bin");
+  if (dict.data->media) {
+    dict.data->media_index = memory::map_rd(path + "/media.idx");
+    if (dict.data->media_index) {
+    } else if (dict.data->media && migration::write_media_index(path, dict.data->media.data, dict.data->media.size)) {
+      dict.data->media_index = memory::map_rd(path + "/media.idx");
     }
   }
 
@@ -240,12 +156,12 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
     if (offset_addr == 0) {
       continue;
     }
-    const uint8_t* index_addr = data->blobs + offset_addr;
+    const uint8_t* index_addr = data->blobs.data + offset_addr;
 
     auto count = read_val<uint32_t>(index_addr);
     for (uint32_t i = 0; i < count; i++) {
       auto offset = read_val<uint64_t>(index_addr);
-      const uint8_t* blob_addr = data->blobs + offset;
+      const uint8_t* blob_addr = data->blobs.data + offset;
 
       // first byte encodes term (0) or meta (1) entry
       auto type = read_val<uint8_t>(blob_addr);
@@ -265,7 +181,7 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 
       auto glossary_offset = read_val<uint64_t>(blob_addr);
       auto glossary_size = read_val<uint32_t>(blob_addr);
-      std::string glossary = decompress_glossary(data->blobs + glossary_offset, glossary_size);
+      std::string glossary = decompress_glossary(data->blobs.data + glossary_offset, glossary_size);
 
       auto def_tags_size = read_val<uint8_t>(blob_addr);
       std::string_view definition_tags = read_str(blob_addr, def_tags_size);
@@ -315,13 +231,13 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
       if (offset_addr == 0) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs + offset_addr;
+      const uint8_t* index_addr = data->blobs.data + offset_addr;
       auto count = read_val<uint32_t>(index_addr);
 
       std::vector<Frequency> frequencies;
       for (uint32_t i = 0; i < count; i++) {
         auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs + offset;
+        const uint8_t* blob_addr = data->blobs.data + offset;
 
         auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
@@ -366,13 +282,13 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
       if (offset_addr == 0) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs + offset_addr;
+      const uint8_t* index_addr = data->blobs.data + offset_addr;
       auto count = read_val<uint32_t>(index_addr);
 
       std::vector<int> pitch_positions;
       for (uint32_t i = 0; i < count; i++) {
         auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs + offset;
+        const uint8_t* blob_addr = data->blobs.data + offset;
 
         auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
@@ -441,7 +357,7 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
       return {};
     }
 
-    const uint8_t* ptr = data->media_index;
+    const uint8_t* ptr = data->media_index.data;
     auto count = read_val<uint32_t>(ptr);
 
     size_t left = 0;
@@ -449,9 +365,9 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
     while (left < right) {
       const size_t mid = left + (right - left) / 2;
       uint64_t record_offset;
-      std::memcpy(&record_offset, data->media_index + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
+      std::memcpy(&record_offset, data->media_index.data + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
 
-      const uint8_t* record = data->media + record_offset;
+      const uint8_t* record = data->media.data + record_offset;
       auto path_size = read_val<uint16_t>(record);
       std::string_view indexed_path = read_str(record, path_size);
       if (indexed_path < media_path) {

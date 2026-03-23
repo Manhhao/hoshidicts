@@ -268,7 +268,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   }
 
   size_t max_threads =
-      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()) + 4);
   std::deque<std::future<ProcessedFile>> threads;
 
   ankerl::unordered_dense::map<uint64_t, uint64_t> glossaries;
@@ -327,7 +327,7 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   }
 
   size_t max_threads =
-      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()) + 4);
   std::deque<std::future<ProcessedFile>> threads;
   auto write_processed = [&](ProcessedFile&& processed) {
     if (processed.data.empty()) {
@@ -429,7 +429,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
   ImportResult result;
   try {
     Zip zip;
-    if (!zip.load(zip_path)) {
+    if (!zip.open(zip_path)) {
       throw std::runtime_error("failed to open zip");
     }
 
@@ -487,9 +487,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     auto hash_thread = std::async(std::launch::async, [&hash_entries, &path]() {
       hash::linear table;
-      table.build(hash_entries);
-      table.save(path + "/hash.table");
-      table.free();
+      table.build_to_file(hash_entries, path + "/hash.table");
     });
 
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));

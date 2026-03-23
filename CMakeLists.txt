@@ -23,6 +23,7 @@ add_subdirectory(external/libdeflate)
 add_library(hoshidicts
     src/hash/hash.cpp
     src/importer.cpp
+    src/memory/memory.cpp
     src/zip/zip.cpp
     src/json/yomitan_parser.cpp
     src/text_processor/text_processor.cpp

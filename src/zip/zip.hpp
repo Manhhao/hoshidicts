@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "../memory/memory.hpp"
+
 struct ZipEntry {
   std::string name;
   uint16_t compression_method;
@@ -14,12 +16,11 @@ struct ZipEntry {
 };
 
 struct Zip {
-  void* data = nullptr;
-  size_t size = 0;
+  memory::mapped_file file;
   std::vector<ZipEntry> entries;
 
   ~Zip();
-  bool load(const std::string& path);
+  bool open(const std::string& path);
   int find(const std::string& name) const;
   std::string read(int index) const;
 

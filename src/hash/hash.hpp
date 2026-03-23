@@ -11,10 +11,8 @@ class linear {
   ~linear();
   uint64_t operator()(std::string_view key) const;
 
-  void build(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries);
-  void free();
-  void save(const std::string& path);
-  void load(void* ptr);
+  void build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries, const std::string& path);
+  void load(uint8_t* ptr);
 
  private:
   struct slot {

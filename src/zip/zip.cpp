@@ -1,13 +1,11 @@
 #include "zip.hpp"
 
-#include <fcntl.h>
 #include <libdeflate.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <cstdint>
 #include <cstring>
+
+#include "../memory/memory.hpp"
 
 namespace {
 template <typename T>
@@ -19,28 +17,12 @@ T read_at(const uint8_t* base, size_t offset) {
 }
 
 Zip::~Zip() {
-  if (data) {
-    munmap(data, size);
-  }
+  memory::unmap(file);
 }
 
-bool Zip::load(const std::string& path) {
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd < 0) {
-    return false;
-  }
-
-  struct stat st{};
-  if (fstat(fd, &st) < 0) {
-    close(fd);
-    return false;
-  }
-  size = st.st_size;
-  
-  data = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
-  close(fd);
-  if (data == MAP_FAILED) {
-    data = nullptr;
+bool Zip::open(const std::string& path) {
+  file = memory::map_rd(path);
+  if (!file) {
     return false;
   }
 
@@ -64,7 +46,7 @@ std::string Zip::read(int index) const {
 
   std::string result;
   result.resize(e.uncompressed_size);
-  const auto* src = static_cast<const uint8_t*>(data) + e.data_offset;
+  const auto* src = file.data + e.data_offset;
 
   if (e.compression_method == 0) {
     std::memcpy(result.data(), src, e.uncompressed_size);
@@ -89,7 +71,7 @@ std::optional<Zip::MediaResult> Zip::read_media(int index) const {
     return out;
   }
 
-  const auto* src = static_cast<const uint8_t*>(data) + e.data_offset;
+  const auto* src = file.data + e.data_offset;
   if (e.compression_method == 0) {
     std::memcpy(out.blob.data(), src, e.uncompressed_size);
   } else if (e.compression_method == 8) {
@@ -106,12 +88,12 @@ std::optional<Zip::MediaResult> Zip::read_media(int index) const {
 
 // https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
 bool Zip::parse_central_directory() {
-  const auto* base = static_cast<const uint8_t*>(data);
-  if (size < 22) {
+  const auto* base = file.data;
+  if (file.size < 22) {
     return false;
   }
 
-  size_t eocd = size - 22;
+  size_t eocd = file.size - 22;
   while (eocd > 0 && read_at<uint32_t>(base, eocd) != 0x06054b50) {
     eocd--;
   }
@@ -121,7 +103,7 @@ bool Zip::parse_central_directory() {
 
   if (eocd >= 20 && read_at<uint32_t>(base, eocd - 20) == 0x07064b50) {
     auto eocd64_offset = read_at<uint64_t>(base, eocd - 12);
-    if (eocd64_offset + 56 <= size && read_at<uint32_t>(base, eocd64_offset) == 0x06064b50) {
+    if (eocd64_offset + 56 <= file.size && read_at<uint32_t>(base, eocd64_offset) == 0x06064b50) {
       total_entries = read_at<uint64_t>(base, eocd64_offset + 32);
       cd_offset = read_at<uint64_t>(base, eocd64_offset + 48);
     }
@@ -131,7 +113,7 @@ bool Zip::parse_central_directory() {
   size_t pos = cd_offset;
 
   for (uint64_t i = 0; i < total_entries; ++i) {
-    if (pos + 46 > size) {
+    if (pos + 46 > file.size) {
       return false;
     }
     if (read_at<uint32_t>(base, pos) != 0x02014b50) {
