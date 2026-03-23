@@ -86,27 +86,12 @@ void unmap_file(void* data, size_t size) {
 #endif
 }
 
-uint8_t read_u8(const uint8_t*& addr) { return *addr++; }
-
-uint16_t read_u16(const uint8_t*& addr) {
-  uint16_t result;
-  std::memcpy(&result, addr, sizeof(uint16_t));
-  addr += sizeof(uint16_t);
-  return result;
-}
-
-uint32_t read_u32(const uint8_t*& addr) {
-  uint32_t result;
-  std::memcpy(&result, addr, sizeof(uint32_t));
-  addr += sizeof(uint32_t);
-  return result;
-}
-
-uint64_t read_u64(const uint8_t*& addr) {
-  uint64_t result;
-  std::memcpy(&result, addr, sizeof(uint64_t));
-  addr += sizeof(uint64_t);
-  return result;
+template <typename T>
+T read_val(const uint8_t*& addr) {
+  T val;
+  std::memcpy(&val, addr, sizeof(T));
+  addr += sizeof(T);
+  return val;
 }
 
 std::string_view read_str(const uint8_t*& addr, uint32_t len) {
@@ -126,9 +111,9 @@ bool write_media_index(const std::string& dict_path, const uint8_t* media_ptr, s
   const uint8_t* eof = addr + media_size;
   while (addr < eof) {
     uint32_t record_start = addr - media_ptr;
-    uint16_t path_size = read_u16(addr);
+    auto path_size = read_val<uint16_t>(addr);
     std::string_view media_path = read_str(addr, path_size);
-    uint32_t blob_size = read_u32(addr);
+    auto blob_size = read_val<uint32_t>(addr);
     index_entries.emplace_back(media_path, record_start);
     addr += blob_size;
   }
@@ -257,38 +242,38 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
     }
     const uint8_t* index_addr = data->blobs + offset_addr;
 
-    uint32_t count = read_u32(index_addr);
+    auto count = read_val<uint32_t>(index_addr);
     for (uint32_t i = 0; i < count; i++) {
-      uint64_t offset = read_u64(index_addr);
+      auto offset = read_val<uint64_t>(index_addr);
       const uint8_t* blob_addr = data->blobs + offset;
 
       // first byte encodes term (0) or meta (1) entry
-      uint8_t type = read_u8(blob_addr);
+      auto type = read_val<uint8_t>(blob_addr);
       if (type != 0) {
         continue;
       }
 
-      uint16_t expr_len = read_u16(blob_addr);
+      auto expr_len = read_val<uint16_t>(blob_addr);
       std::string_view expr = read_str(blob_addr, expr_len);
 
-      uint16_t reading_len = read_u16(blob_addr);
+      auto reading_len = read_val<uint16_t>(blob_addr);
       std::string_view reading = read_str(blob_addr, reading_len);
 
       if (expr != expression && reading != expression) {
         continue;
       }
 
-      uint64_t glossary_offset = read_u64(blob_addr);
-      uint32_t glossary_size = read_u32(blob_addr);
+      auto glossary_offset = read_val<uint64_t>(blob_addr);
+      auto glossary_size = read_val<uint32_t>(blob_addr);
       std::string glossary = decompress_glossary(data->blobs + glossary_offset, glossary_size);
 
-      uint8_t def_tags_size = read_u8(blob_addr);
+      auto def_tags_size = read_val<uint8_t>(blob_addr);
       std::string_view definition_tags = read_str(blob_addr, def_tags_size);
 
-      uint8_t rules_size = read_u8(blob_addr);
+      auto rules_size = read_val<uint8_t>(blob_addr);
       std::string_view rules = read_str(blob_addr, rules_size);
 
-      uint8_t term_tag_size = read_u8(blob_addr);
+      auto term_tag_size = read_val<uint8_t>(blob_addr);
       std::string_view term_tags = read_str(blob_addr, term_tag_size);
 
       GlossaryEntry entry;
@@ -331,31 +316,31 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
         continue;
       }
       const uint8_t* index_addr = data->blobs + offset_addr;
-      uint32_t count = read_u32(index_addr);
+      auto count = read_val<uint32_t>(index_addr);
 
       std::vector<Frequency> frequencies;
       for (uint32_t i = 0; i < count; i++) {
-        uint64_t offset = read_u64(index_addr);
+        auto offset = read_val<uint64_t>(index_addr);
         const uint8_t* blob_addr = data->blobs + offset;
 
-        uint8_t type = read_u8(blob_addr);
+        auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
           continue;
         }
 
-        uint16_t expr_len = read_u16(blob_addr);
+        auto expr_len = read_val<uint16_t>(blob_addr);
         std::string_view expr = read_str(blob_addr, expr_len);
         if (expr != term.expression) {
           continue;
         }
 
-        uint8_t mode_len = read_u8(blob_addr);
+        auto mode_len = read_val<uint8_t>(blob_addr);
         std::string_view mode = read_str(blob_addr, mode_len);
         if (mode != "freq") {
           continue;
         }
 
-        uint32_t freq_data_size = read_u32(blob_addr);
+        auto freq_data_size = read_val<uint32_t>(blob_addr);
         std::string_view freq_data = read_str(blob_addr, freq_data_size);
 
         ParsedFrequency parsed;
@@ -382,31 +367,31 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
         continue;
       }
       const uint8_t* index_addr = data->blobs + offset_addr;
-      uint32_t count = read_u32(index_addr);
+      auto count = read_val<uint32_t>(index_addr);
 
       std::vector<int> pitch_positions;
       for (uint32_t i = 0; i < count; i++) {
-        uint64_t offset = read_u64(index_addr);
+        auto offset = read_val<uint64_t>(index_addr);
         const uint8_t* blob_addr = data->blobs + offset;
 
-        uint8_t type = read_u8(blob_addr);
+        auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
           continue;
         }
 
-        uint16_t expr_len = read_u16(blob_addr);
+        auto expr_len = read_val<uint16_t>(blob_addr);
         std::string_view expr = read_str(blob_addr, expr_len);
         if (expr != term.expression) {
           continue;
         }
 
-        uint8_t mode_len = read_u8(blob_addr);
+        auto mode_len = read_val<uint8_t>(blob_addr);
         std::string_view mode = read_str(blob_addr, mode_len);
         if (mode != "pitch") {
           continue;
         }
 
-        uint32_t pitch_data_size = read_u32(blob_addr);
+        auto pitch_data_size = read_val<uint32_t>(blob_addr);
         std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
 
         ParsedPitch parsed;
@@ -457,7 +442,7 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
     }
 
     const uint8_t* ptr = data->media_index;
-    uint32_t count = read_u32(ptr);
+    auto count = read_val<uint32_t>(ptr);
 
     size_t left = 0;
     size_t right = count;
@@ -467,14 +452,14 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
       std::memcpy(&record_offset, data->media_index + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
 
       const uint8_t* record = data->media + record_offset;
-      uint16_t path_size = read_u16(record);
+      auto path_size = read_val<uint16_t>(record);
       std::string_view indexed_path = read_str(record, path_size);
       if (indexed_path < media_path) {
         left = mid + 1;
       } else if (indexed_path > media_path) {
         right = mid;
       } else {
-        uint32_t blob_size = read_u32(record);
+        auto blob_size = read_val<uint32_t>(record);
         const char* blob_data = reinterpret_cast<const char*>(record);
         return {blob_data, blob_data + blob_size};
       }

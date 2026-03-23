@@ -61,24 +61,11 @@ Files get_files(const Zip& zip) {
   return files;
 }
 
-void write_u8(std::vector<char>& out, uint8_t value) { out.push_back(static_cast<char>(value)); }
-
-void write_u16(std::vector<char>& out, uint16_t value) {
+template <typename T>
+void write_val(std::vector<char>& out, T value) {
   const size_t old_size = out.size();
-  out.resize(old_size + sizeof(uint16_t));
-  std::memcpy(out.data() + old_size, &value, sizeof(uint16_t));
-}
-
-void write_u32(std::vector<char>& out, uint32_t value) {
-  const size_t old_size = out.size();
-  out.resize(old_size + sizeof(uint32_t));
-  std::memcpy(out.data() + old_size, &value, sizeof(uint32_t));
-}
-
-void write_u64(std::vector<char>& out, uint64_t value) {
-  const size_t old_size = out.size();
-  out.resize(old_size + sizeof(uint64_t));
-  std::memcpy(out.data() + old_size, &value, sizeof(uint64_t));
+  out.resize(old_size + sizeof(T));
+  std::memcpy(out.data() + old_size, &value, sizeof(T));
 }
 
 void write_str(std::vector<char>& out, std::string_view value) {
@@ -166,22 +153,22 @@ ProcessedFile process_term_bank(const std::string& content) {
     std::string_view reading = term.reading.empty() ? expr : term.reading;
     std::string_view definition_tags = term.definition_tags.value_or("");
 
-    write_u8(processed.data, 0);
-    write_u16(processed.data, expr.size());
+    write_val<uint8_t>(processed.data, 0);
+    write_val<uint16_t>(processed.data, expr.size());
     write_str(processed.data, expr);
-    write_u16(processed.data, reading.size());
+    write_val<uint16_t>(processed.data, reading.size());
     write_str(processed.data, reading);
 
     uint64_t glossary_offset = processed.data.size();
-    write_u64(processed.data, 0);
-    write_u32(processed.data, blob_size);
+    write_val<uint64_t>(processed.data, 0);
+    write_val<uint32_t>(processed.data, blob_size);
     processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
 
-    write_u8(processed.data, definition_tags.size());
+    write_val<uint8_t>(processed.data, definition_tags.size());
     write_str(processed.data, definition_tags);
-    write_u8(processed.data, term.rules.size());
+    write_val<uint8_t>(processed.data, term.rules.size());
     write_str(processed.data, term.rules);
-    write_u8(processed.data, term.term_tags.size());
+    write_val<uint8_t>(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
@@ -212,12 +199,12 @@ ProcessedFile process_meta_bank(const std::string& content) {
     std::string_view mode = meta.mode;
     std::string_view data = meta.data.str;
 
-    write_u8(processed.data, 1);
-    write_u16(processed.data, expr.size());
+    write_val<uint8_t>(processed.data, 1);
+    write_val<uint16_t>(processed.data, expr.size());
     write_str(processed.data, expr);
-    write_u8(processed.data, mode.size());
+    write_val<uint8_t>(processed.data, mode.size());
     write_str(processed.data, mode);
-    write_u32(processed.data, data.size());
+    write_val<uint32_t>(processed.data, data.size());
     write_str(processed.data, data);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
@@ -338,9 +325,9 @@ std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>&
     hash_entries.emplace_back(offsets[i].first, write_offset);
 
     auto count = static_cast<uint32_t>(j - i);
-    write_u32(offset_buf, count);
+    write_val<uint32_t>(offset_buf, count);
     for (size_t k = i; k < j; ++k) {
-      write_u64(offset_buf, offsets[k].second);
+      write_val<uint64_t>(offset_buf, offsets[k].second);
     }
 
     write_offset += sizeof(uint32_t) + count * sizeof(uint64_t);
@@ -369,9 +356,9 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
     }
 
     uint32_t record_start = blobs_buf.size();
-    write_u16(blobs_buf, media_file->path.size());
+    write_val<uint16_t>(blobs_buf, media_file->path.size());
     write_str(blobs_buf, media_file->path);
-    write_u32(blobs_buf, media_file->blob.size());
+    write_val<uint32_t>(blobs_buf, media_file->blob.size());
     write_bytes(blobs_buf, media_file->blob.data(), media_file->blob.size());
 
     index_entries.emplace_back(std::move(media_file->path), record_start);
@@ -380,9 +367,9 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
 
   std::ranges::sort(index_entries);
   std::vector<char> index_buf;
-  write_u32(index_buf, index_entries.size());
+  write_val<uint32_t>(index_buf, index_entries.size());
   for (const auto& [name, offset] : index_entries) {
-    write_u64(index_buf, offset);
+    write_val<uint64_t>(index_buf, offset);
   }
 
   media.write(blobs_buf.data(), static_cast<std::streamsize>(blobs_buf.size()));
