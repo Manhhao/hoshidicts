@@ -394,7 +394,8 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
   setup_stream_exceptions(media_idx);
 
   size_t media_count = 0;
-  std::vector<char> blobs_buf;
+  uint32_t write_pos = 0;
+  std::vector<char> buf;
   std::vector<std::pair<std::string, uint32_t>> index_entries;
   for (int file_index : files) {
     auto media_file = zip.read_media(file_index);
@@ -402,11 +403,14 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
       continue;
     }
 
-    uint32_t record_start = blobs_buf.size();
-    write_val<uint16_t>(blobs_buf, media_file->path.size());
-    write_str(blobs_buf, media_file->path);
-    write_val<uint32_t>(blobs_buf, media_file->blob.size());
-    write_bytes(blobs_buf, media_file->blob.data(), media_file->blob.size());
+    uint32_t record_start = write_pos;
+    buf.clear();
+    write_val<uint16_t>(buf, media_file->path.size());
+    write_str(buf, media_file->path);
+    write_val<uint32_t>(buf, media_file->blob.size());
+    write_bytes(buf, media_file->blob.data(), media_file->blob.size());
+    media.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    write_pos += buf.size();
 
     index_entries.emplace_back(std::move(media_file->path), record_start);
     media_count++;
@@ -419,7 +423,6 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
     write_val<uint64_t>(index_buf, offset);
   }
 
-  media.write(blobs_buf.data(), static_cast<std::streamsize>(blobs_buf.size()));
   media_idx.write(index_buf.data(), static_cast<std::streamsize>(index_buf.size()));
   return media_count;
 }
