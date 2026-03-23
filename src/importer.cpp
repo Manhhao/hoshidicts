@@ -5,6 +5,7 @@
 #include <zstd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -88,25 +89,71 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
     return;
   }
 
-  std::vector<std::pair<uint64_t, uint64_t>> temp(offsets.size());
+  const size_t n = offsets.size();
+  const size_t num_threads = std::max<size_t>(1, std::thread::hardware_concurrency());
+  std::vector<std::pair<uint64_t, uint64_t>> temp(n);
   auto* src = &offsets;
   auto* dst = &temp;
 
-  for (uint32_t shift = 0; shift < 64; shift += 8) {
-    std::array<size_t, 256> pos{};
-    for (const auto& entry : *src) {
-      pos[(entry.first >> shift) & 0xff]++;
+  std::vector<std::array<size_t, 65536>> local_counts(num_threads);
+
+  for (uint32_t shift = 0; shift < 64; shift += 16) {
+    const size_t chunk = (n + num_threads - 1) / num_threads;
+    std::vector<std::future<void>> futures;
+    for (size_t t = 0; t < num_threads; t++) {
+      const size_t begin = t * chunk;
+      const size_t end = std::min(begin + chunk, n);
+      if (begin >= n) {
+        break;
+      }
+
+      local_counts[t].fill(0);
+      futures.push_back(std::async(std::launch::async, [src, shift, begin, end, &local_counts, t]() {
+        for (size_t i = begin; i < end; i++) {
+          local_counts[t][((*src)[i].first >> shift) & 0xffff]++;
+        }
+      }));
+    }
+    for (auto& future : futures) {
+      future.get();
     }
 
+    std::array<size_t, 65536> global_count{};
+    for (size_t t = 0; t < futures.size(); t++) {
+      for (size_t bucket = 0; bucket < 65536; bucket++) {
+        global_count[bucket] += local_counts[t][bucket];
+      }
+    }
+
+    std::array<size_t, 65536> global_pos{};
     size_t total = 0;
-    for (size_t& p : pos) {
-      size_t count = p;
-      p = total;
-      total += count;
+    for (size_t bucket = 0; bucket < 65536; bucket++) {
+      global_pos[bucket] = total;
+      total += global_count[bucket];
     }
 
-    for (const auto& entry : *src) {
-      (*dst)[pos[(entry.first >> shift) & 0xff]++] = entry;
+    std::vector<std::array<size_t, 65536>> thread_pos(futures.size());
+    for (size_t bucket = 0; bucket < 65536; bucket++) {
+      size_t pos = global_pos[bucket];
+      for (size_t t = 0; t < futures.size(); t++) {
+        thread_pos[t][bucket] = pos;
+        pos += local_counts[t][bucket];
+      }
+    }
+
+    std::vector<std::future<void>> scatter_futures;
+    for (size_t t = 0; t < futures.size(); t++) {
+      const size_t begin = t * chunk;
+      const size_t end = std::min(begin + chunk, n);
+      scatter_futures.push_back(std::async(std::launch::async, [src, dst, shift, begin, end, &thread_pos, t]() {
+        for (size_t i = begin; i < end; i++) {
+          const size_t bucket = ((*src)[i].first >> shift) & 0xffff;
+          (*dst)[thread_pos[t][bucket]++] = (*src)[i];
+        }
+      }));
+    }
+    for (auto& future : scatter_futures) {
+      future.get();
     }
 
     std::swap(src, dst);
