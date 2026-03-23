@@ -2,10 +2,10 @@
 
 #include <ankerl/unordered_dense.h>
 #include <xxh3.h>
-#include <zip.h>
 #include <zstd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +21,7 @@
 
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
+#include "zip/zip.hpp"
 
 namespace {
 struct Files {
@@ -38,131 +39,34 @@ struct ProcessedFile {
   size_t count = 0;
 };
 
-struct MediaFile {
-  std::string path;
-  std::vector<char> blob;
-};
-
 void setup_stream_exceptions(std::ofstream& stream) { stream.exceptions(std::ios::failbit | std::ios::badbit); }
 
-std::string read_file_by_index(zip_t* archive, int index) {
-  if (zip_entry_openbyindex(archive, index) != 0) {
-    return "";
-  }
-
-  const size_t size = zip_entry_size(archive);
-  std::string buffer;
-  buffer.resize(size);
-  ssize_t bytes_read = 0;
-  if (size > 0) {
-    bytes_read = zip_entry_noallocread(archive, buffer.data(), size);
-  }
-  zip_entry_close(archive);
-
-  if (bytes_read < 0) {
-    return "";
-  }
-
-  return buffer;
-}
-
-std::string read_file_by_name(zip_t* archive, const char* name) {
-  if (zip_entry_open(archive, name) != 0) {
-    return "";
-  }
-
-  const size_t size = zip_entry_size(archive);
-  std::string buffer;
-  buffer.resize(size);
-  ssize_t bytes_read = 0;
-  if (size > 0) {
-    bytes_read = zip_entry_noallocread(archive, buffer.data(), size);
-  }
-  zip_entry_close(archive);
-
-  if (bytes_read < 0) {
-    return "";
-  }
-
-  return buffer;
-}
-
-std::optional<MediaFile> read_media_by_index(zip_t* archive, int index) {
-  if (zip_entry_openbyindex(archive, index) != 0) {
-    return std::nullopt;
-  }
-
-  MediaFile out;
-  const size_t size = zip_entry_size(archive);
-  out.path = zip_entry_name(archive);
-  out.blob.resize(size);
-  ssize_t bytes_read = 0;
-  if (size > 0) {
-    bytes_read = zip_entry_noallocread(archive, out.blob.data(), size);
-  }
-  zip_entry_close(archive);
-
-  if (bytes_read < 0) {
-    return std::nullopt;
-  }
-
-  return out;
-}
-
-Files get_files(zip_t* archive) {
+Files get_files(const Zip& zip) {
   Files files;
-  const ssize_t num_entries = zip_entries_total(archive);
-  if (num_entries < 0) {
-    return files;
-  }
-
-  for (int i = 0; i < num_entries; ++i) {
-    if (zip_entry_openbyindex(archive, i) != 0) {
+  for (int i = 0; i < static_cast<int>(zip.entries.size()); i++) {
+    const auto& name = zip.entries[i].name;
+    if (name.empty() || name.back() == '/') {
       continue;
     }
 
-    if (zip_entry_isdir(archive) == 1) {
-      zip_entry_close(archive);
-      continue;
+    if (name.starts_with("term_bank_")) {
+      files.term_banks.push_back(i);
+    } else if (name.starts_with("term_meta_bank_")) {
+      files.meta_banks.push_back(i);
+    } else if (name.starts_with("tag_bank_")) {
+      files.tag_banks.push_back(i);
+    } else if (!(name == "styles.css" || name == "index.json")) {
+      files.media_files.push_back(i);
     }
-
-    const char* raw_name = zip_entry_name(archive);
-    if (raw_name != nullptr) {
-      const std::string_view name(raw_name);
-      if (name.starts_with("term_bank_")) {
-        files.term_banks.push_back(i);
-      } else if (name.starts_with("term_meta_bank_")) {
-        files.meta_banks.push_back(i);
-      } else if (name.starts_with("tag_bank_")) {
-        files.tag_banks.push_back(i);
-      } else if (!(name == "styles.css" || name == "index.json")) {
-        files.media_files.push_back(i);
-      }
-    }
-    zip_entry_close(archive);
   }
-
   return files;
 }
 
-void write_u8(std::vector<char>& out, uint8_t value) { out.push_back(static_cast<char>(value)); }
-
-void write_u16(std::vector<char>& out, uint16_t value) {
+template <typename T>
+void write_val(std::vector<char>& out, T value) {
   const size_t old_size = out.size();
-  out.resize(old_size + sizeof(uint16_t));
-  std::memcpy(out.data() + old_size, &value, sizeof(uint16_t));
-}
-
-void write_u32(std::vector<char>& out, uint32_t value) {
-  const size_t old_size = out.size();
-  out.resize(old_size + sizeof(uint32_t));
-  std::memcpy(out.data() + old_size, &value, sizeof(uint32_t));
-}
-
-void write_u64(std::vector<char>& out, uint64_t value) {
-  const size_t old_size = out.size();
-  out.resize(old_size + sizeof(uint64_t));
-  std::memcpy(out.data() + old_size, &value, sizeof(uint64_t));
+  out.resize(old_size + sizeof(T));
+  std::memcpy(out.data() + old_size, &value, sizeof(T));
 }
 
 void write_str(std::vector<char>& out, std::string_view value) {
@@ -185,25 +89,71 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
     return;
   }
 
-  std::vector<std::pair<uint64_t, uint64_t>> temp(offsets.size());
+  const size_t n = offsets.size();
+  const size_t num_threads = std::max<size_t>(1, std::thread::hardware_concurrency());
+  std::vector<std::pair<uint64_t, uint64_t>> temp(n);
   auto* src = &offsets;
   auto* dst = &temp;
 
-  for (uint32_t shift = 0; shift < 64; shift += 8) {
-    std::array<size_t, 256> pos{};
-    for (const auto& entry : *src) {
-      pos[(entry.first >> shift) & 0xff]++;
+  std::vector<std::array<size_t, 65536>> local_counts(num_threads);
+
+  for (uint32_t shift = 0; shift < 64; shift += 16) {
+    const size_t chunk = (n + num_threads - 1) / num_threads;
+    std::vector<std::future<void>> futures;
+    for (size_t t = 0; t < num_threads; t++) {
+      const size_t begin = t * chunk;
+      const size_t end = std::min(begin + chunk, n);
+      if (begin >= n) {
+        break;
+      }
+
+      local_counts[t].fill(0);
+      futures.push_back(std::async(std::launch::async, [src, shift, begin, end, &local_counts, t]() {
+        for (size_t i = begin; i < end; i++) {
+          local_counts[t][((*src)[i].first >> shift) & 0xffff]++;
+        }
+      }));
+    }
+    for (auto& future : futures) {
+      future.get();
     }
 
+    std::array<size_t, 65536> global_count{};
+    for (size_t t = 0; t < futures.size(); t++) {
+      for (size_t bucket = 0; bucket < 65536; bucket++) {
+        global_count[bucket] += local_counts[t][bucket];
+      }
+    }
+
+    std::array<size_t, 65536> global_pos{};
     size_t total = 0;
-    for (size_t& p : pos) {
-      size_t count = p;
-      p = total;
-      total += count;
+    for (size_t bucket = 0; bucket < 65536; bucket++) {
+      global_pos[bucket] = total;
+      total += global_count[bucket];
     }
 
-    for (const auto& entry : *src) {
-      (*dst)[pos[(entry.first >> shift) & 0xff]++] = entry;
+    std::vector<std::array<size_t, 65536>> thread_pos(futures.size());
+    for (size_t bucket = 0; bucket < 65536; bucket++) {
+      size_t pos = global_pos[bucket];
+      for (size_t t = 0; t < futures.size(); t++) {
+        thread_pos[t][bucket] = pos;
+        pos += local_counts[t][bucket];
+      }
+    }
+
+    std::vector<std::future<void>> scatter_futures;
+    for (size_t t = 0; t < futures.size(); t++) {
+      const size_t begin = t * chunk;
+      const size_t end = std::min(begin + chunk, n);
+      scatter_futures.push_back(std::async(std::launch::async, [src, dst, shift, begin, end, &thread_pos, t]() {
+        for (size_t i = begin; i < end; i++) {
+          const size_t bucket = ((*src)[i].first >> shift) & 0xffff;
+          (*dst)[thread_pos[t][bucket]++] = (*src)[i];
+        }
+      }));
+    }
+    for (auto& future : scatter_futures) {
+      future.get();
     }
 
     std::swap(src, dst);
@@ -250,22 +200,22 @@ ProcessedFile process_term_bank(const std::string& content) {
     std::string_view reading = term.reading.empty() ? expr : term.reading;
     std::string_view definition_tags = term.definition_tags.value_or("");
 
-    write_u8(processed.data, 0);
-    write_u16(processed.data, expr.size());
+    write_val<uint8_t>(processed.data, 0);
+    write_val<uint16_t>(processed.data, expr.size());
     write_str(processed.data, expr);
-    write_u16(processed.data, reading.size());
+    write_val<uint16_t>(processed.data, reading.size());
     write_str(processed.data, reading);
 
     uint64_t glossary_offset = processed.data.size();
-    write_u64(processed.data, 0);
-    write_u32(processed.data, blob_size);
+    write_val<uint64_t>(processed.data, 0);
+    write_val<uint32_t>(processed.data, blob_size);
     processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
 
-    write_u8(processed.data, definition_tags.size());
+    write_val<uint8_t>(processed.data, definition_tags.size());
     write_str(processed.data, definition_tags);
-    write_u8(processed.data, term.rules.size());
+    write_val<uint8_t>(processed.data, term.rules.size());
     write_str(processed.data, term.rules);
-    write_u8(processed.data, term.term_tags.size());
+    write_val<uint8_t>(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
@@ -296,12 +246,12 @@ ProcessedFile process_meta_bank(const std::string& content) {
     std::string_view mode = meta.mode;
     std::string_view data = meta.data.str;
 
-    write_u8(processed.data, 1);
-    write_u16(processed.data, expr.size());
+    write_val<uint8_t>(processed.data, 1);
+    write_val<uint16_t>(processed.data, expr.size());
     write_str(processed.data, expr);
-    write_u8(processed.data, mode.size());
+    write_val<uint8_t>(processed.data, mode.size());
     write_str(processed.data, mode);
-    write_u32(processed.data, data.size());
+    write_val<uint32_t>(processed.data, data.size());
     write_str(processed.data, data);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
@@ -311,14 +261,14 @@ ProcessedFile process_meta_bank(const std::string& content) {
   return processed;
 }
 
-void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const std::string& zip_path,
+void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
                  const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
   }
 
   size_t max_threads =
-      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()) + 4);
   std::deque<std::future<ProcessedFile>> threads;
 
   ankerl::unordered_dense::map<uint64_t, uint64_t> glossaries;
@@ -355,15 +305,8 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   };
 
   for (int file_index : files) {
-    threads.push_back(std::async(std::launch::async, [&zip_path, file_index]() {
-      zip_t* archive = zip_open(zip_path.c_str(), 0, 'r');
-      if (!archive) {
-        return ProcessedFile{};
-      }
-      std::string content = read_file_by_index(archive, file_index);
-      zip_close(archive);
-      return process_term_bank(content);
-    }));
+    threads.push_back(
+        std::async(std::launch::async, [&zip, file_index]() { return process_term_bank(zip.read(file_index)); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -377,14 +320,14 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   }
 }
 
-void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const std::string& zip_path,
+void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
   }
 
   size_t max_threads =
-      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()));
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()) + 4);
   std::deque<std::future<ProcessedFile>> threads;
   auto write_processed = [&](ProcessedFile&& processed) {
     if (processed.data.empty()) {
@@ -401,15 +344,8 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   };
 
   for (int file_index : files) {
-    threads.push_back(std::async(std::launch::async, [&zip_path, file_index]() {
-      zip_t* archive = zip_open(zip_path.c_str(), 0, 'r');
-      if (!archive) {
-        return ProcessedFile{};
-      }
-      std::string content = read_file_by_index(archive, file_index);
-      zip_close(archive);
-      return process_meta_bank(content);
-    }));
+    threads.push_back(
+        std::async(std::launch::async, [&zip, file_index]() { return process_meta_bank(zip.read(file_index)); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -423,8 +359,8 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   }
 }
 
-void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
-                        std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
+std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
+                                     std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
   std::vector<char> offset_buf;
   radix_sort(offsets);
   for (size_t i = 0; i < offsets.size();) {
@@ -436,18 +372,18 @@ void write_offset_index(std::ostream& file, std::vector<std::pair<uint64_t, uint
     hash_entries.emplace_back(offsets[i].first, write_offset);
 
     auto count = static_cast<uint32_t>(j - i);
-    write_u32(offset_buf, count);
+    write_val<uint32_t>(offset_buf, count);
     for (size_t k = i; k < j; ++k) {
-      write_u64(offset_buf, offsets[k].second);
+      write_val<uint64_t>(offset_buf, offsets[k].second);
     }
 
     write_offset += sizeof(uint32_t) + count * sizeof(uint64_t);
     i = j;
   }
-  file.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
+  return offset_buf;
 }
 
-size_t write_media(const std::string& path, zip_t* archive, const std::vector<int>& files) {
+size_t write_media(const std::string& path, const Zip& zip, const std::vector<int>& files) {
   if (files.empty()) {
     return 0;
   }
@@ -458,19 +394,23 @@ size_t write_media(const std::string& path, zip_t* archive, const std::vector<in
   setup_stream_exceptions(media_idx);
 
   size_t media_count = 0;
-  std::vector<char> blobs_buf;
+  uint32_t write_pos = 0;
+  std::vector<char> buf;
   std::vector<std::pair<std::string, uint32_t>> index_entries;
   for (int file_index : files) {
-    auto media_file = read_media_by_index(archive, file_index);
+    auto media_file = zip.read_media(file_index);
     if (!media_file.has_value()) {
       continue;
     }
 
-    uint32_t record_start = blobs_buf.size();
-    write_u16(blobs_buf, media_file->path.size());
-    write_str(blobs_buf, media_file->path);
-    write_u32(blobs_buf, media_file->blob.size());
-    write_bytes(blobs_buf, media_file->blob.data(), media_file->blob.size());
+    uint32_t record_start = write_pos;
+    buf.clear();
+    write_val<uint16_t>(buf, media_file->path.size());
+    write_str(buf, media_file->path);
+    write_val<uint32_t>(buf, media_file->blob.size());
+    write_bytes(buf, media_file->blob.data(), media_file->blob.size());
+    media.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    write_pos += buf.size();
 
     index_entries.emplace_back(std::move(media_file->path), record_start);
     media_count++;
@@ -478,12 +418,11 @@ size_t write_media(const std::string& path, zip_t* archive, const std::vector<in
 
   std::ranges::sort(index_entries);
   std::vector<char> index_buf;
-  write_u32(index_buf, index_entries.size());
+  write_val<uint32_t>(index_buf, index_entries.size());
   for (const auto& [name, offset] : index_entries) {
-    write_u64(index_buf, offset);
+    write_val<uint64_t>(index_buf, offset);
   }
 
-  media.write(blobs_buf.data(), static_cast<std::streamsize>(blobs_buf.size()));
   media_idx.write(index_buf.data(), static_cast<std::streamsize>(index_buf.size()));
   return media_count;
 }
@@ -491,16 +430,19 @@ size_t write_media(const std::string& path, zip_t* archive, const std::vector<in
 
 ImportResult dictionary_importer::import(const std::string& zip_path, const std::string& output_dir, bool low_ram) {
   ImportResult result;
-  zip_t* archive = nullptr;
   try {
-    archive = zip_open(zip_path.c_str(), 0, 'r');
-    if (!archive) {
+    Zip zip;
+    if (!zip.open(zip_path)) {
       throw std::runtime_error("failed to open zip");
     }
 
-    std::string index_content = read_file_by_name(archive, "index.json");
+    int index_idx = zip.find("index.json");
+    if (index_idx < 0) {
+      throw std::runtime_error("could not find index.json");
+    }
+    std::string index_content = zip.read(index_idx);
     if (index_content.empty()) {
-      throw std::runtime_error("could not find or read index.json");
+      throw std::runtime_error("could not read index.json");
     }
 
     Index index;
@@ -518,36 +460,41 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("failed to write index.json");
     }
 
-    std::string styles = read_file_by_name(archive, "styles.css");
-    if (!styles.empty()) {
-      std::ofstream styles_file(path + "/styles.css", std::ios::binary);
-      setup_stream_exceptions(styles_file);
-      styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
+    int styles_idx = zip.find("styles.css");
+    if (styles_idx >= 0) {
+      std::string styles = zip.read(styles_idx);
+      if (!styles.empty()) {
+        std::ofstream styles_file(path + "/styles.css", std::ios::binary);
+        setup_stream_exceptions(styles_file);
+        styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
+      }
     }
 
-    const Files files = get_files(archive);
-    std::future<size_t> media_thread = std::async(std::launch::async, [&path, archive, &files = files.media_files]() {
-      return write_media(path, archive, files);
-    });
+    const Files files = get_files(zip);
+    std::future<size_t> media_thread =
+        std::async(std::launch::async, [&path, &zip, &files]() { return write_media(path, zip, files.media_files); });
 
     std::ofstream blobs(path + "/blobs.bin", std::ios::binary);
     setup_stream_exceptions(blobs);
     std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
-    write_terms(blobs, offsets, zip_path, files.term_banks, write_offset, result, low_ram);
-    write_meta(blobs, offsets, zip_path, files.meta_banks, write_offset, result, low_ram);
+    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
+    write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
     if (offsets.empty()) {
       throw std::runtime_error("empty dictionary");
     }
 
     std::vector<std::pair<uint64_t, uint64_t>> hash_entries;
-    write_offset_index(blobs, offsets, write_offset, hash_entries);
+    auto offset_buf = build_offset_index(offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
-    hash::linear table;
-    table.build(hash_entries);
-    table.save(path + "/hash.table");
-    table.free();
+    auto hash_thread = std::async(std::launch::async, [&hash_entries, &path]() {
+      hash::linear table;
+      table.build_to_file(hash_entries, path + "/hash.table");
+    });
+
+    blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
+    hash_thread.get();
 
     result.media_count = media_thread.get();
 
@@ -556,10 +503,6 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
   } catch (const std::exception& e) {
     result.success = false;
     result.errors.emplace_back(e.what());
-  }
-
-  if (archive) {
-    zip_close(archive);
   }
 
   if (!result.success && !result.title.empty()) {

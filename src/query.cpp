@@ -1,14 +1,6 @@
 #include "hoshidicts/query.hpp"
 
 #include <ankerl/unordered_dense.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 #include <zstd.h>
 
 #include <cstddef>
@@ -21,89 +13,15 @@
 
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
+#include "memory/memory.hpp"
 
 namespace {
-std::pair<void*, size_t> map_file(const std::string& path) {
-#ifdef _WIN32
-  HANDLE file =
-      CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) {
-    return {};
-  }
-
-  LARGE_INTEGER file_size;
-  if (!GetFileSizeEx(file, &file_size)) {
-    CloseHandle(file);
-    return {};
-  }
-
-  HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
-  CloseHandle(file);
-  if (!mapping) {
-    return {};
-  }
-
-  void* data = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
-  CloseHandle(mapping);
-  if (!data) {
-    return {};
-  }
-
-  return {data, static_cast<size_t>(file_size.QuadPart)};
-#else
-  int fd = open(path.c_str(), O_RDONLY);
-  if (fd == -1) {
-    return {};
-  }
-
-  struct stat st{};
-  if (fstat(fd, &st) != 0) {
-    close(fd);
-    return {};
-  }
-
-  void* data = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-  close(fd);
-  if (data == MAP_FAILED) {
-    return {};
-  }
-
-  return {data, static_cast<size_t>(st.st_size)};
-#endif
-}
-
-void unmap_file(void* data, size_t size) {
-  if (!data) {
-    return;
-  }
-#ifdef _WIN32
-  UnmapViewOfFile(data);
-#else
-  munmap(data, size);
-#endif
-}
-
-uint8_t read_u8(const uint8_t*& addr) { return *addr++; }
-
-uint16_t read_u16(const uint8_t*& addr) {
-  uint16_t result;
-  std::memcpy(&result, addr, sizeof(uint16_t));
-  addr += sizeof(uint16_t);
-  return result;
-}
-
-uint32_t read_u32(const uint8_t*& addr) {
-  uint32_t result;
-  std::memcpy(&result, addr, sizeof(uint32_t));
-  addr += sizeof(uint32_t);
-  return result;
-}
-
-uint64_t read_u64(const uint8_t*& addr) {
-  uint64_t result;
-  std::memcpy(&result, addr, sizeof(uint64_t));
-  addr += sizeof(uint64_t);
-  return result;
+template <typename T>
+T read_val(const uint8_t*& addr) {
+  T val;
+  std::memcpy(&val, addr, sizeof(T));
+  addr += sizeof(T);
+  return val;
 }
 
 std::string_view read_str(const uint8_t*& addr, uint32_t len) {
@@ -115,20 +33,16 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
 
 struct DictionaryQuery::DictionaryData {
   hash::linear table;
-  uint8_t* blobs = nullptr;
-  size_t blobs_size = 0;
-  uint8_t* hash_table = nullptr;
-  size_t hash_table_size = 0;
-  uint8_t* media = nullptr;
-  size_t media_size = 0;
-  uint8_t* media_index = nullptr;
-  size_t media_index_size = 0;
+  memory::mapped_file blobs;
+  memory::mapped_file hash_table;
+  memory::mapped_file media;
+  memory::mapped_file media_index;
 
   ~DictionaryData() {
-    unmap_file(blobs, blobs_size);
-    unmap_file(hash_table, hash_table_size);
-    unmap_file(media, media_size);
-    unmap_file(media_index, media_index_size);
+    memory::unmap(blobs);
+    memory::unmap(hash_table);
+    memory::unmap(media);
+    memory::unmap(media_index);
   }
 };
 
@@ -158,31 +72,20 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
 
   dict.data = std::make_unique<DictionaryData>();
 
-  auto [hash_table, hash_table_size] = map_file(path + "/hash.table");
-  if (!hash_table) {
+  dict.data->hash_table = memory::map_rd(path + "/hash.table");
+  if (!dict.data->hash_table) {
     return;
   }
-  dict.data->hash_table_size = hash_table_size;
-  dict.data->hash_table = reinterpret_cast<uint8_t*>(hash_table);
-  dict.data->table.load(hash_table);
+  dict.data->table.load(dict.data->hash_table.data);
 
-  auto [blobs, blobs_size] = map_file(path + "/blobs.bin");
-  if (!blobs) {
+  dict.data->blobs = memory::map_rd(path + "/blobs.bin");
+  if (!dict.data->blobs) {
     return;
   }
-  dict.data->blobs_size = blobs_size;
-  dict.data->blobs = reinterpret_cast<uint8_t*>(blobs);
 
-  auto [media, media_size] = map_file(path + "/media.bin");
-  if (media) {
-    dict.data->media_size = media_size;
-    dict.data->media = reinterpret_cast<uint8_t*>(media);
-
-    auto [media_index, media_index_size] = map_file(path + "/media.idx");
-    if (media_index) {
-      dict.data->media_index_size = media_index_size;
-      dict.data->media_index = reinterpret_cast<uint8_t*>(media_index);
-    }
+  dict.data->media = memory::map_rd(path + "/media.bin");
+  if (dict.data->media) {
+    dict.data->media_index = memory::map_rd(path + "/media.idx");
   }
 
   switch (type) {
@@ -213,40 +116,40 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
     if (offset_addr == 0) {
       continue;
     }
-    const uint8_t* index_addr = data->blobs + offset_addr;
+    const uint8_t* index_addr = data->blobs.data + offset_addr;
 
-    uint32_t count = read_u32(index_addr);
+    auto count = read_val<uint32_t>(index_addr);
     for (uint32_t i = 0; i < count; i++) {
-      uint64_t offset = read_u64(index_addr);
-      const uint8_t* blob_addr = data->blobs + offset;
+      auto offset = read_val<uint64_t>(index_addr);
+      const uint8_t* blob_addr = data->blobs.data + offset;
 
       // first byte encodes term (0) or meta (1) entry
-      uint8_t type = read_u8(blob_addr);
+      auto type = read_val<uint8_t>(blob_addr);
       if (type != 0) {
         continue;
       }
 
-      uint16_t expr_len = read_u16(blob_addr);
+      auto expr_len = read_val<uint16_t>(blob_addr);
       std::string_view expr = read_str(blob_addr, expr_len);
 
-      uint16_t reading_len = read_u16(blob_addr);
+      auto reading_len = read_val<uint16_t>(blob_addr);
       std::string_view reading = read_str(blob_addr, reading_len);
 
       if (expr != expression && reading != expression) {
         continue;
       }
 
-      uint64_t glossary_offset = read_u64(blob_addr);
-      uint32_t glossary_size = read_u32(blob_addr);
-      std::string glossary = decompress_glossary(data->blobs + glossary_offset, glossary_size);
+      auto glossary_offset = read_val<uint64_t>(blob_addr);
+      auto glossary_size = read_val<uint32_t>(blob_addr);
+      std::string glossary = decompress_glossary(data->blobs.data + glossary_offset, glossary_size);
 
-      uint8_t def_tags_size = read_u8(blob_addr);
+      auto def_tags_size = read_val<uint8_t>(blob_addr);
       std::string_view definition_tags = read_str(blob_addr, def_tags_size);
 
-      uint8_t rules_size = read_u8(blob_addr);
+      auto rules_size = read_val<uint8_t>(blob_addr);
       std::string_view rules = read_str(blob_addr, rules_size);
 
-      uint8_t term_tag_size = read_u8(blob_addr);
+      auto term_tag_size = read_val<uint8_t>(blob_addr);
       std::string_view term_tags = read_str(blob_addr, term_tag_size);
 
       GlossaryEntry entry;
@@ -288,32 +191,32 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
       if (offset_addr == 0) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs + offset_addr;
-      uint32_t count = read_u32(index_addr);
+      const uint8_t* index_addr = data->blobs.data + offset_addr;
+      auto count = read_val<uint32_t>(index_addr);
 
       std::vector<Frequency> frequencies;
       for (uint32_t i = 0; i < count; i++) {
-        uint64_t offset = read_u64(index_addr);
-        const uint8_t* blob_addr = data->blobs + offset;
+        auto offset = read_val<uint64_t>(index_addr);
+        const uint8_t* blob_addr = data->blobs.data + offset;
 
-        uint8_t type = read_u8(blob_addr);
+        auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
           continue;
         }
 
-        uint16_t expr_len = read_u16(blob_addr);
+        auto expr_len = read_val<uint16_t>(blob_addr);
         std::string_view expr = read_str(blob_addr, expr_len);
         if (expr != term.expression) {
           continue;
         }
 
-        uint8_t mode_len = read_u8(blob_addr);
+        auto mode_len = read_val<uint8_t>(blob_addr);
         std::string_view mode = read_str(blob_addr, mode_len);
         if (mode != "freq") {
           continue;
         }
 
-        uint32_t freq_data_size = read_u32(blob_addr);
+        auto freq_data_size = read_val<uint32_t>(blob_addr);
         std::string_view freq_data = read_str(blob_addr, freq_data_size);
 
         ParsedFrequency parsed;
@@ -339,32 +242,32 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
       if (offset_addr == 0) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs + offset_addr;
-      uint32_t count = read_u32(index_addr);
+      const uint8_t* index_addr = data->blobs.data + offset_addr;
+      auto count = read_val<uint32_t>(index_addr);
 
       std::vector<int> pitch_positions;
       for (uint32_t i = 0; i < count; i++) {
-        uint64_t offset = read_u64(index_addr);
-        const uint8_t* blob_addr = data->blobs + offset;
+        auto offset = read_val<uint64_t>(index_addr);
+        const uint8_t* blob_addr = data->blobs.data + offset;
 
-        uint8_t type = read_u8(blob_addr);
+        auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
           continue;
         }
 
-        uint16_t expr_len = read_u16(blob_addr);
+        auto expr_len = read_val<uint16_t>(blob_addr);
         std::string_view expr = read_str(blob_addr, expr_len);
         if (expr != term.expression) {
           continue;
         }
 
-        uint8_t mode_len = read_u8(blob_addr);
+        auto mode_len = read_val<uint8_t>(blob_addr);
         std::string_view mode = read_str(blob_addr, mode_len);
         if (mode != "pitch") {
           continue;
         }
 
-        uint32_t pitch_data_size = read_u32(blob_addr);
+        auto pitch_data_size = read_val<uint32_t>(blob_addr);
         std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
 
         ParsedPitch parsed;
@@ -414,25 +317,25 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
       return {};
     }
 
-    const uint8_t* ptr = data->media_index;
-    uint32_t count = read_u32(ptr);
+    const uint8_t* ptr = data->media_index.data;
+    auto count = read_val<uint32_t>(ptr);
 
     size_t left = 0;
     size_t right = count;
     while (left < right) {
       const size_t mid = left + (right - left) / 2;
       uint64_t record_offset;
-      std::memcpy(&record_offset, data->media_index + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
+      std::memcpy(&record_offset, data->media_index.data + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
 
-      const uint8_t* record = data->media + record_offset;
-      uint16_t path_size = read_u16(record);
+      const uint8_t* record = data->media.data + record_offset;
+      auto path_size = read_val<uint16_t>(record);
       std::string_view indexed_path = read_str(record, path_size);
       if (indexed_path < media_path) {
         left = mid + 1;
       } else if (indexed_path > media_path) {
         right = mid;
       } else {
-        uint32_t blob_size = read_u32(record);
+        auto blob_size = read_val<uint32_t>(record);
         const char* blob_data = reinterpret_cast<const char*>(record);
         return {blob_data, blob_data + blob_size};
       }
