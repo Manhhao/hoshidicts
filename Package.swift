@@ -17,11 +17,15 @@ let package = Package(
                 .product(name: "libzstd", package: "zstd"),
             ],
             path: ".",
-            sources: ["src"],
+            sources: [
+                "src",
+                "external/libdeflate/lib",
+            ],
             publicHeadersPath: "include",
             cxxSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath("external/libdeflate"),
+                .headerSearchPath("external/libdeflate/lib"),
                 .headerSearchPath("external/utfcpp/source"),
                 .headerSearchPath("external/glaze/include"),
                 .headerSearchPath("external/xxHash"),
