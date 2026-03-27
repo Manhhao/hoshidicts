@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -96,6 +97,8 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
   auto* dst = &temp;
 
   std::vector<std::array<size_t, 65536>> local_counts(num_threads);
+  auto global_count = std::make_unique<std::array<size_t, 65536>>();
+  auto global_pos = std::make_unique<std::array<size_t, 65536>>();
 
   for (uint32_t shift = 0; shift < 64; shift += 16) {
     const size_t chunk = (n + num_threads - 1) / num_threads;
@@ -118,23 +121,23 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
       future.get();
     }
 
-    std::array<size_t, 65536> global_count{};
+    global_count->fill(0);
     for (size_t t = 0; t < futures.size(); t++) {
       for (size_t bucket = 0; bucket < 65536; bucket++) {
-        global_count[bucket] += local_counts[t][bucket];
+        (*global_count)[bucket] += local_counts[t][bucket];
       }
     }
 
-    std::array<size_t, 65536> global_pos{};
+    global_pos->fill(0);
     size_t total = 0;
     for (size_t bucket = 0; bucket < 65536; bucket++) {
-      global_pos[bucket] = total;
-      total += global_count[bucket];
+      (*global_pos)[bucket] = total;
+      total += (*global_count)[bucket];
     }
 
     std::vector<std::array<size_t, 65536>> thread_pos(futures.size());
     for (size_t bucket = 0; bucket < 65536; bucket++) {
-      size_t pos = global_pos[bucket];
+      size_t pos = (*global_pos)[bucket];
       for (size_t t = 0; t < futures.size(); t++) {
         thread_pos[t][bucket] = pos;
         pos += local_counts[t][bucket];
