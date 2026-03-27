@@ -117,6 +117,12 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
       return len_a > len_b;
     }
 
+    auto match_a = a.term.expression == a.matched;
+    auto match_b = b.term.expression == b.matched;
+    if (match_a != match_b) {
+      return match_a > match_b;
+    }
+
     auto steps_a = a.preprocessor_steps;
     auto steps_b = b.preprocessor_steps;
     if (steps_a != steps_b) {
