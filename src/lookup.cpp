@@ -37,18 +37,6 @@ int get_freq_value_for_dict(const TermResult& term, const std::string& dict_name
 
   return INT_MAX;
 }
-
-bool freq_sort_order(const LookupResult& a, const LookupResult& b, const std::vector<std::string>& freq_dict_order) {
-  for (const auto& dict_name : freq_dict_order) {
-    const int freq_a = get_freq_value_for_dict(a.term, dict_name);
-    const int freq_b = get_freq_value_for_dict(b.term, dict_name);
-    if (freq_a != freq_b) {
-      return freq_a < freq_b;
-    }
-  }
-
-  return false;
-}
 }
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length) const {
@@ -117,12 +105,6 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
       return len_a > len_b;
     }
 
-    auto match_a = a.term.expression == a.matched;
-    auto match_b = b.term.expression == b.matched;
-    if (match_a != match_b) {
-      return match_a > match_b;
-    }
-
     auto steps_a = a.preprocessor_steps;
     auto steps_b = b.preprocessor_steps;
     if (steps_a != steps_b) {
@@ -135,7 +117,23 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
       return process_len_a < process_len_b;
     }
 
-    return freq_sort_order(a, b, freq_dict_order);
+    auto match_a = a.term.expression == a.deinflected;
+    auto match_b = b.term.expression == b.deinflected;
+    if (match_a != match_b) {
+      return match_a > match_b;
+    }
+
+    for (const auto& dict_name : freq_dict_order) {
+      const int freq_a = get_freq_value_for_dict(a.term, dict_name);
+      const int freq_b = get_freq_value_for_dict(b.term, dict_name);
+      if (freq_a != freq_b) {
+        return freq_a < freq_b;
+      }
+    }
+
+    auto a_reading_expr_match = a.term.expression == a.term.reading;
+    auto b_reading_expr_match = b.term.expression == b.term.reading;
+    return a_reading_expr_match > b_reading_expr_match;
   });
 
   if (results.size() > static_cast<size_t>(max_results)) {
