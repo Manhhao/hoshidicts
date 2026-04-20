@@ -362,6 +362,11 @@ void DictionaryQuery::materialize(TermResult& term) const {
 }
 
 std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, const std::string& media_path) const {
+  auto view = get_media_file_view(dict_name, media_path);
+  return {view.data, view.data + view.size};
+}
+
+MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name, const std::string& media_path) const {
   for (const auto& [name, styles, data] : term_dicts_) {
     if (name != dict_name) {
       continue;
@@ -391,7 +396,7 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
       } else {
         auto blob_size = read_val<uint32_t>(record);
         const char* blob_data = reinterpret_cast<const char*>(record);
-        return {blob_data, blob_data + blob_size};
+        return {.data=blob_data, .size=blob_size};
       }
     }
     return {};
