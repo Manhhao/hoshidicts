@@ -19,6 +19,8 @@ struct GlossaryEntry {
   std::string glossary;
   std::string definition_tags;
   std::string term_tags;
+  const uint8_t* compressed_data = nullptr;
+  uint32_t compressed_size = 0;
 };
 
 struct FrequencyEntry {
@@ -65,6 +67,10 @@ class DictionaryQuery {
   std::vector<std::string> get_freq_dict_order() const;
 
  private:
+  friend class Lookup;
+  std::vector<TermResult> query_raw(const std::string& expression) const;
+  void materialize(TermResult& term) const;
+
   struct DictionaryData;
   struct Dictionary {
     std::string name;

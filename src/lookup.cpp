@@ -53,10 +53,10 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     for (auto& variant : processor_results) {
       auto deinflection_results = deinflector_.deinflect(variant.text);
       for (auto& deinflection : deinflection_results) {
-        auto terms = query_.query(deinflection.text);
+        auto terms = query_.query_raw(deinflection.text);
         filter_by_pos(terms, deinflection);
 
-        for (const auto& term : terms) {
+        for (auto& term : terms) {
           // deduplicate glossaries
           auto key = std::make_pair(term.expression, term.reading);
           auto it = result_map.find(key);
@@ -67,14 +67,14 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
               it->second = LookupResult{.matched = search_str,
                                         .deinflected = deinflection.text,
                                         .trace = deinflection.trace,
-                                        .term = term,
+                                        .term = std::move(term),
                                         .preprocessor_steps = variant.steps};
             }
           } else {
             result_map.emplace(key, LookupResult{.matched = search_str,
                                                  .deinflected = deinflection.text,
                                                  .trace = deinflection.trace,
-                                                 .term = term,
+                                                 .term = std::move(term),
                                                  .preprocessor_steps = variant.steps});
           }
         }
@@ -128,6 +128,10 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
 
   if (results.size() > static_cast<size_t>(max_results)) {
     results.resize(max_results);
+  }
+
+  for (auto& r : results) {
+    query_.materialize(r.term);
   }
 
   return results;
