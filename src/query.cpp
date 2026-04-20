@@ -110,6 +110,14 @@ void DictionaryQuery::add_pitch_dict(const std::string& path) {
 }
 
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
+  auto results = query_raw(expression);
+  for (auto& term : results) {
+    materialize(term);
+  }
+  return results;
+}
+
+std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
   std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
   for (const auto& [name, styles, data] : term_dicts_) {
     uint64_t offset_addr = data->table(expression);
@@ -141,7 +149,6 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 
       auto glossary_offset = read_val<uint64_t>(blob_addr);
       auto glossary_size = read_val<uint32_t>(blob_addr);
-      std::string glossary = decompress_glossary(data->blobs.data + glossary_offset, glossary_size);
 
       auto def_tags_size = read_val<uint8_t>(blob_addr);
       std::string_view definition_tags = read_str(blob_addr, def_tags_size);
@@ -156,7 +163,8 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
       entry.dict_name = name;
       entry.definition_tags = definition_tags;
       entry.term_tags = term_tags;
-      entry.glossary = glossary;
+      entry.compressed_data = data->blobs.data + glossary_offset;
+      entry.compressed_size = glossary_size;
 
       auto [it, inserted] = term_map.try_emplace({expr, reading});
       if (inserted) {
@@ -305,6 +313,12 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) 
 
   result.resize(actual_size);
   return result;
+}
+
+void DictionaryQuery::materialize(TermResult& term) const {
+  for (auto& g : term.glossaries) {
+    g.glossary = decompress_glossary(g.compressed_data, g.compressed_size);
+  }
 }
 
 std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, const std::string& media_path) const {
