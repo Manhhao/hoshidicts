@@ -14,6 +14,11 @@ struct DictionaryStyle {
   std::string styles;
 };
 
+struct MediaFileView {
+  const char* data;
+  size_t size;
+};
+
 struct GlossaryEntry {
   std::string dict_name;
   std::string glossary;
@@ -63,6 +68,8 @@ class DictionaryQuery {
   std::vector<TermResult> query(const std::string& expression) const;
 
   std::vector<char> get_media_file(const std::string& dict_name, const std::string& media_path) const;
+  __attribute__((swift_attr("import_unsafe")))
+  MediaFileView get_media_file_view(const std::string& dict_name, const std::string& media_path) const;
   std::vector<DictionaryStyle> get_styles() const;
   std::vector<std::string> get_freq_dict_order() const;
 
