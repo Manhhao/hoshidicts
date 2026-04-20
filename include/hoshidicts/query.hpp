@@ -4,6 +4,12 @@
 #include <string>
 #include <vector>
 
+#if defined(__clang__) && defined(__APPLE__)
+#define SWIFT_IMPORT_UNSAFE __attribute__((swift_attr("import_unsafe")))
+#else
+#define SWIFT_IMPORT_UNSAFE
+#endif
+
 struct Frequency {
   int value;
   std::string display_value;
@@ -68,7 +74,7 @@ class DictionaryQuery {
   std::vector<TermResult> query(const std::string& expression) const;
 
   std::vector<char> get_media_file(const std::string& dict_name, const std::string& media_path) const;
-  __attribute__((swift_attr("import_unsafe")))
+  SWIFT_IMPORT_UNSAFE
   MediaFileView get_media_file_view(const std::string& dict_name, const std::string& media_path) const;
   std::vector<DictionaryStyle> get_styles() const;
   std::vector<std::string> get_freq_dict_order() const;
