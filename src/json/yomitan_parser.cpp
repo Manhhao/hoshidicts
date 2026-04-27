@@ -6,10 +6,9 @@
 template <>
 struct glz::meta<Index> {
   using T = Index;
-  static constexpr auto value =
-      object("title", glz::raw_string<&T::title>, "revision", glz::raw_string<&T::revision>, "format", &T::format,
-             "isUpdatable", &T::isUpdatable, "indexUrl", glz::raw_string<&T::indexUrl>, "downloadUrl",
-             glz::raw_string<&T::downloadUrl>);
+  static constexpr auto value = object("title", glz::raw_string<&T::title>, "revision", glz::raw_string<&T::revision>,
+                                       "format", &T::format, "isUpdatable", &T::isUpdatable, "indexUrl",
+                                       glz::raw_string<&T::indexUrl>, "downloadUrl", glz::raw_string<&T::downloadUrl>);
 };
 
 template <>
@@ -24,6 +23,13 @@ template <>
 struct glz::meta<Meta> {
   using T = Meta;
   static constexpr auto value = array(glz::raw_string<&T::expression>, glz::raw_string<&T::mode>, &T::data);
+};
+
+template <>
+struct glz::meta<Kanji> {
+  using T = Kanji;
+  static constexpr auto value = array(glz::raw_string<&T::character>, glz::raw_string<&T::onyomi>,
+                                      glz::raw_string<&T::kunyomi>, glz::raw_string<&T::tags>, &T::definitions, &T::stats);
 };
 
 template <>
@@ -101,6 +107,11 @@ bool yomitan_parser::parse_term_bank(std::string_view content, std::vector<Term>
 }
 
 bool yomitan_parser::parse_meta_bank(std::string_view content, std::vector<Meta>& out) {
+  auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
+  return !error;
+}
+
+bool yomitan_parser::parse_kanji_bank(std::string_view content, std::vector<Kanji>& out) {
   auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
   return !error;
 }

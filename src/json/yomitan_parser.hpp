@@ -31,6 +31,15 @@ struct Meta {
   glz::raw_json_view data;
 };
 
+struct Kanji {
+  std::string_view character;
+  std::string_view onyomi;
+  std::string_view kunyomi;
+  std::string_view tags;
+  std::vector<std::string_view> definitions;
+  std::unordered_map<std::string, std::string> stats;
+};
+
 struct Tag {
   std::string_view name;
   std::string_view category;
@@ -54,6 +63,7 @@ namespace yomitan_parser {
 bool parse_index(std::string_view content, Index& out);
 bool parse_term_bank(std::string_view content, std::vector<Term>& out);
 bool parse_meta_bank(std::string_view content, std::vector<Meta>& out);
+bool parse_kanji_bank(std::string_view content, std::vector<Kanji>& out);
 bool parse_tag_bank(std::string_view content, std::vector<Tag>& out);
 bool parse_frequency(std::string_view content, ParsedFrequency& out);
 bool parse_pitch(std::string_view content, ParsedPitch& out);

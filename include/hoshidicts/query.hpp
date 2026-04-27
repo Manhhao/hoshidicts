@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 #if defined(__clang__) && defined(__APPLE__)
 #define SWIFT_IMPORT_UNSAFE __attribute__((swift_attr("import_unsafe")))
@@ -53,6 +54,20 @@ struct TermResult {
   std::vector<PitchEntry> pitches;
 };
 
+struct KanjiEntry {
+  std::string dict_name;
+  std::string onyomi;
+  std::string kunyomi;
+  std::string tags;
+  std::vector<std::string> definitions;
+  std::unordered_map<std::string, std::string> stats;
+};
+
+struct KanjiResult {
+  std::string character;
+  std::vector<KanjiEntry> entries;
+};
+
 class DictionaryQuery {
  public:
   DictionaryQuery();
@@ -67,9 +82,11 @@ class DictionaryQuery {
   void add_term_dict(const std::string& path);
   void add_freq_dict(const std::string& path);
   void add_pitch_dict(const std::string& path);
+  void add_kanji_dict(const std::string& path);
 
   void query_freq(std::vector<TermResult>& terms) const;
   void query_pitch(std::vector<TermResult>& terms) const;
+  KanjiResult query_kanji(const std::string& kanji) const;
 
   std::vector<TermResult> query(const std::string& expression) const;
 
@@ -90,7 +107,7 @@ class DictionaryQuery {
     std::string styles;
     std::unique_ptr<DictionaryData> data;
   };
-  enum DictionaryType : uint8_t { TERM, FREQ, PITCH };
+  enum DictionaryType : uint8_t { TERM, FREQ, PITCH, KANJI };
 
   void add_dict(const std::string& path, DictionaryType);
 
@@ -98,4 +115,5 @@ class DictionaryQuery {
   std::vector<Dictionary> term_dicts_;
   std::vector<Dictionary> freq_dicts_;
   std::vector<Dictionary> pitch_dicts_;
+  std::vector<Dictionary> kanji_dicts_;
 };
