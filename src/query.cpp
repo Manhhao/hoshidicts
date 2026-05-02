@@ -3,7 +3,6 @@
 #include <ankerl/unordered_dense.h>
 #include <zstd.h>
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -36,14 +35,17 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
 
 struct DictionaryQuery::DictionaryData {
   hash::linear table;
+  hash::bloom bloom;
   memory::mapped_file blobs;
   memory::mapped_file hash_table;
+  memory::mapped_file bloom_filter;
   memory::mapped_file media;
   memory::mapped_file media_index;
 
   ~DictionaryData() {
     memory::unmap(blobs);
     memory::unmap(hash_table);
+    memory::unmap(bloom_filter);
     memory::unmap(media);
     memory::unmap(media_index);
   }
@@ -80,6 +82,14 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
     return;
   }
   dict.data->table.load(dict.data->hash_table.data);
+
+  dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
+  if (!dict.data->bloom_filter) {
+    hash::bloom::build_to_file(dict.data->table.populated(), path + "/bloom.filter");
+    dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
+  }
+  dict.data->bloom.load(dict.data->bloom_filter.data);
+  dict.data->table.set_bloom(&dict.data->bloom);
 
   dict.data->blobs = memory::map_rd(path + "/blobs.bin");
   if (!dict.data->blobs) {

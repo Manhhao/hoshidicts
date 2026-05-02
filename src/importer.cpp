@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "hash/bloom.hpp"
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
 #include "zip/zip.hpp"
@@ -494,6 +495,8 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     auto hash_thread = std::async(std::launch::async, [&hash_entries, &path]() {
       hash::linear table;
       table.build_to_file(hash_entries, path + "/hash.table");
+      auto hashes = hash_entries | std::views::keys | std::ranges::to<std::vector>();
+      hash::bloom::build_to_file(hashes, path + "/bloom.filter");
     });
 
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
