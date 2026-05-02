@@ -32,39 +32,6 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
   addr += len;
   return result;
 }
-
-namespace migration {
-bool write_media_index(const std::string& dict_path, const uint8_t* media_ptr, size_t media_size) {
-  if (!media_ptr || media_size == 0) {
-    return false;
-  }
-
-  std::vector<std::pair<std::string_view, uint32_t>> index_entries;
-  const uint8_t* addr = media_ptr;
-  const uint8_t* eof = addr + media_size;
-  while (addr < eof) {
-    uint32_t record_start = addr - media_ptr;
-    auto path_size = read_val<uint16_t>(addr);
-    std::string_view media_path = read_str(addr, path_size);
-    auto blob_size = read_val<uint32_t>(addr);
-    index_entries.emplace_back(media_path, record_start);
-    addr += blob_size;
-  }
-
-  std::ranges::sort(index_entries);
-  uint32_t count = index_entries.size();
-  std::vector<char> index_buf(sizeof(uint32_t) + index_entries.size() * sizeof(uint64_t));
-  std::memcpy(index_buf.data(), &count, sizeof(uint32_t));
-  for (size_t i = 0; i < index_entries.size(); ++i) {
-    uint64_t offset = index_entries[i].second;
-    std::memcpy(index_buf.data() + sizeof(uint32_t) + i * sizeof(uint64_t), &offset, sizeof(uint64_t));
-  }
-
-  std::ofstream out(dict_path + "/media.idx", std::ios::binary);
-  out.write(index_buf.data(), static_cast<std::streamsize>(index_buf.size()));
-  return true;
-}
-}
 }
 
 struct DictionaryQuery::DictionaryData {
@@ -122,10 +89,6 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   dict.data->media = memory::map_rd(path + "/media.bin");
   if (dict.data->media) {
     dict.data->media_index = memory::map_rd(path + "/media.idx");
-    if (dict.data->media_index) {
-    } else if (dict.data->media && migration::write_media_index(path, dict.data->media.data, dict.data->media.size)) {
-      dict.data->media_index = memory::map_rd(path + "/media.idx");
-    }
   }
 
   switch (type) {
