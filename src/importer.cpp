@@ -39,6 +39,8 @@ struct ProcessedFile {
   ankerl::unordered_dense::map<uint64_t, std::vector<char>> glossaries;
   std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
   size_t count = 0;
+  size_t pitch_count = 0;
+  size_t freq_count = 0;
 };
 
 void setup_stream_exceptions(std::ofstream& stream) { stream.exceptions(std::ios::failbit | std::ios::badbit); }
@@ -260,6 +262,11 @@ ProcessedFile process_meta_bank(const std::string& content) {
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     processed.count++;
+    if (mode == "freq") {
+      processed.freq_count++;
+    } else if (mode == "pitch") {
+      processed.pitch_count++;
+    }
   }
 
   return processed;
@@ -345,6 +352,8 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
 
     write_offset += processed.data.size();
     result.meta_count += processed.count;
+    result.freq_count += processed.freq_count;
+    result.pitch_count += processed.pitch_count;
   };
 
   for (int file_index : files) {
