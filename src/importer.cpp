@@ -264,7 +264,7 @@ ProcessedFile process_meta_bank(const std::string& content) {
     processed.count++;
     if (mode == "freq") {
       processed.freq_count++;
-    } else if (mode == "pitch") {
+    } else if (mode == "pitch" || mode == "ipa") {
       processed.pitch_count++;
     }
   }

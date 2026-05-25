@@ -273,6 +273,7 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
       auto count = read_val<uint32_t>(index_addr);
 
       std::vector<int> pitch_positions;
+      std::vector<std::string> transcriptions;
       for (uint32_t i = 0; i < count; i++) {
         auto offset = read_val<uint64_t>(index_addr);
         const uint8_t* blob_addr = data->blobs.data + offset;
@@ -290,23 +291,36 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
 
         auto mode_len = read_val<uint8_t>(blob_addr);
         std::string_view mode = read_str(blob_addr, mode_len);
-        if (mode != "pitch") {
-          continue;
-        }
-
-        auto pitch_data_size = read_val<uint32_t>(blob_addr);
-        std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
-
         ParsedPitch parsed;
-        if (yomitan_parser::parse_pitch(pitch_data, parsed)) {
-          if (!parsed.reading.empty() && parsed.reading != term.reading) {
-            continue;
+        if (mode == "pitch") {
+          auto pitch_data_size = read_val<uint32_t>(blob_addr);
+          std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
+
+          if (yomitan_parser::parse_pitch(pitch_data, parsed)) {
+            if (!parsed.reading.empty() && parsed.reading != term.reading) {
+              continue;
+            }
+            pitch_positions.insert(pitch_positions.end(), parsed.pitches.begin(), parsed.pitches.end());
           }
-          pitch_positions.insert(pitch_positions.end(), parsed.pitches.begin(), parsed.pitches.end());
+        } else if (mode == "ipa") {
+          auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
+          std::string_view transcriptions_data = read_str(blob_addr, transcriptions_data_size);
+          if (yomitan_parser::parse_ipa(transcriptions_data, parsed)) {
+            if (!parsed.reading.empty() && parsed.reading != term.reading) {
+              continue;
+            }
+            for (std::string_view transcription : parsed.transcriptions) {
+              transcriptions.emplace_back(transcription);
+            }
+          }
         }
       }
-      if (!pitch_positions.empty()) {
-        term.pitches.emplace_back(PitchEntry{.dict_name = name, .pitch_positions = std::move(pitch_positions)});
+      if (!pitch_positions.empty() || !transcriptions.empty()) {
+        term.pitches.emplace_back(PitchEntry{
+            .dict_name = name,
+            .pitch_positions = std::move(pitch_positions),
+            .transcriptions = std::move(transcriptions),
+        });
       }
     }
   }
@@ -375,7 +389,7 @@ MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name,
       } else {
         auto blob_size = read_val<uint32_t>(record);
         const char* blob_data = reinterpret_cast<const char*>(record);
-        return {.data=blob_data, .size=blob_size};
+        return {.data = blob_data, .size = blob_size};
       }
     }
     return {};
