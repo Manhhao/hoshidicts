@@ -15,10 +15,13 @@ set(ZSTD_BUILD_STATIC ON CACHE BOOL "")
 set(LIBDEFLATE_BUILD_SHARED_LIB OFF CACHE BOOL "")
 set(LIBDEFLATE_BUILD_GZIP OFF CACHE BOOL "")
 
+set(UTF8PROC_INSTALL OFF CACHE BOOL "")
+
 add_subdirectory(external/glaze)
 add_subdirectory(external/zstd)
 add_subdirectory(external/unordered_dense)
 add_subdirectory(external/libdeflate)
+add_subdirectory(external/utf8proc)
 
 add_library(hoshidicts
     src/hash/hash.cpp
@@ -44,6 +47,7 @@ target_link_libraries(hoshidicts PRIVATE
     libzstd_static
     libdeflate_static
     unordered_dense
+    utf8proc::utf8proc
 )
 
 add_executable(hoshidicts-cli

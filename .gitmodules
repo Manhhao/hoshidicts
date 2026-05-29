@@ -16,3 +16,6 @@
 [submodule "external/libdeflate"]
 	path = external/libdeflate
 	url = https://github.com/ebiggers/libdeflate.git
+[submodule "external/utf8proc"]
+	path = external/utf8proc
+	url = git@github.com:JuliaStrings/utf8proc.git
