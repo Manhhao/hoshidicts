@@ -1,15 +1,27 @@
 #include "text_processor.hpp"
 
+#include <ankerl/unordered_dense.h>
 #include <utf8.h>
 #include <utf8proc.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <glaze/glaze.hpp>
 #include <map>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
+
+namespace internal {
+struct KanjiMapping {
+  std::string oyaji;
+  std::vector<std::string> itaiji;
+};
+}
 
 namespace {
 struct TextProcessor {
@@ -144,6 +156,36 @@ std::u32string alphanumeric_to_fullwidth(const std::u32string& text) {
   return result;
 }
 
+constexpr auto mapping_list = std::to_array<unsigned char>({
+#embed "../../external/kanji-processor/src/full_list.json"
+});
+
+std::u32string standardize_kanji(const std::u32string& text) {
+  static const auto map = [] {
+    std::vector<internal::KanjiMapping> list;
+    if (glz::read_json(list,
+                       std::string_view{reinterpret_cast<const char*>(mapping_list.data()), mapping_list.size()})) {
+      return ankerl::unordered_dense::map<char32_t, char32_t>{};
+    };
+
+    ankerl::unordered_dense::map<char32_t, char32_t> m;
+    for (const auto& [oyaji, itaiji] : list) {
+      const char32_t parent = utf8::utf8to32(oyaji).front();
+      for (const auto& variant : itaiji) {
+        m[utf8::utf8to32(variant).front()] = parent;
+      }
+    }
+    return m;
+  }();
+
+  std::u32string result;
+  for (char32_t c : text) {
+    auto it = map.find(c);
+    result += it != map.end() ? it->second : c;
+  }
+  return result;
+}
+
 // TODO: implement rest of preprocessors
 std::vector<TextProcessor> get_japanese_processors() {
   return {
@@ -161,8 +203,12 @@ std::vector<TextProcessor> get_japanese_processors() {
        }},
       {.options = {0, 1},
        .process = [](const std::u32string& text, int opt) -> std::u32string { return opt == 1 ? nfkc(text) : text; }},
-      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? alphanumeric_to_fullwidth(text) : text;
+       }},
+      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? standardize_kanji(text) : text;
        }}};
 }
 }

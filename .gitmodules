@@ -19,3 +19,6 @@
 [submodule "external/utf8proc"]
 	path = external/utf8proc
 	url = git@github.com:JuliaStrings/utf8proc.git
+[submodule "external/kanji-processor"]
+	path = external/kanji-processor
+	url = https://github.com/yomidevs/kanji-processor.git
