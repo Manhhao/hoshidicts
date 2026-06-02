@@ -20,6 +20,7 @@ let package = Package(
             sources: [
                 "src",
                 "external/libdeflate/lib",
+                "external/utf8proc/utf8proc.c",
             ],
             publicHeadersPath: "include",
             cxxSettings: [
@@ -30,6 +31,7 @@ let package = Package(
                 .headerSearchPath("external/glaze/include"),
                 .headerSearchPath("external/xxHash"),
                 .headerSearchPath("external/unordered_dense/include"),
+                .headerSearchPath("external/utf8proc"),
                 .unsafeFlags(["-Wno-missing-braces"]),
             ],
             swiftSettings: [
