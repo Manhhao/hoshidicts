@@ -1,6 +1,6 @@
 # hoshidicts
 
-This library implements a dictionary backend that works similarly to [Yomitan](https://github.com/yomidevs/yomitan). This was made for [Hoshi Reader](https://github.com/Manhhao/Hoshi-Reader) and was only tested with Japanese. Other languages might need their own deinflector or adjustments to the lookup strategy.
+This library implements a dictionary backend that works similarly to [Yomitan](https://github.com/yomidevs/yomitan). This was made for [Hoshi Reader](https://github.com/Manhhao/Hoshi-Reader). Japanese and English language processing are supported through explicit language pipelines; additional languages can add their own preprocessing, deinflection, postprocessing, and part-of-speech condition mapping.
 
 A MIT version of the library is available on the [main-mit](https://github.com/Manhhao/hoshidicts/tree/main-mit) branch.
 
@@ -43,33 +43,48 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
 ```
 Returns raw bytes for file originally stored at `media_path` in term dictionary `dict_name` or an empty vector if the file does not exist.
 
-### deinflector
+### language
 ```cpp
-std::vector<DeinflectionResult> Deinflector::deinflect(const std::string& text) const
+const LanguageProcessor& language::get(std::string_view id)
 ```
-Deinflects a given Japanese string using rules from the Yomitan deinflector. As this doesn't use any dictionary data, the result may include invalid deinflections.
+Returns the language pipeline for a language identifier. Currently supported identifiers are `ja` and `en`.
 
 ```cpp
-static uint32_t Deinflector::pos_to_conditions(const std::vector<std::string>& part_of_speech)
+std::vector<TextVariant> LanguageProcessor::preprocess(const std::string& text) const
 ```
-Converts a vector of part-of-speech tags into a bitmask used for deinflection filtering.
+Returns lookup variants generated before deinflection, with a step count used for result ranking.
+
+```cpp
+std::vector<DeinflectionResult> LanguageProcessor::deinflect(const std::string& text) const
+```
+Returns deinflection candidates using the selected language's rules. As this doesn't use any dictionary data, the result may include invalid deinflections.
+
+```cpp
+std::vector<TextVariant> LanguageProcessor::postprocess(const std::string& text) const
+```
+Returns variants generated after deinflection. Languages without postprocessors return the original text.
+
+```cpp
+uint32_t LanguageProcessor::pos_to_conditions(const std::vector<std::string>& part_of_speech) const
+```
+Converts dictionary part-of-speech tags into the bitmask used for language-specific deinflection filtering.
 
 ### lookup
 ```cpp
-Lookup::Lookup(DictionaryQuery& query, Deinflector& deinflector)
+Lookup::Lookup(DictionaryQuery& query, const LanguageProcessor& language)
 ```
-Creates a Lookup object using a given query with dictionaries added and a deinflector.
+Creates a Lookup object using a given query with dictionaries added and a language pipeline.
 
 ```cpp
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results = 16, size_t scan_length = 16) const
 ```
-Follows a parsing strategy similar to Yomitan. Substrings of `lookup_string` are tested from length `scan_length` down to 1. Each substring is preprocessed, deinflected then queried using the query object.
+Follows a parsing strategy similar to Yomitan. Substrings of `lookup_string` are tested from length `scan_length` down to 1. Each substring is preprocessed, deinflected, postprocessed, then queried using the query object.
 
 Results are filtered by part-of-speech tags defined in dictionaries, or added directly if none are present. The results are sorted by matched length first, then by preprocessing steps, then deinflection trace length and finally by frequency.
 
 ## Acknowledgements
 
-- [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese deinflection rules and descriptions, Japanese preprocessor | GPLv3
+- [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese and English deinflection rules and descriptions, text processors | GPLv3
 - [glaze](https://github.com/stephenberry/glaze): MIT
 - [libdeflate](https://github.com/ebiggers/libdeflate.git): MIT
 - [xxHash](https://github.com/Cyan4973/xxHash): BSD-2-Clause

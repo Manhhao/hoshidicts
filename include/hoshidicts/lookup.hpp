@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "deinflector.hpp"
+#include "language.hpp"
 #include "query.hpp"
 
 struct LookupResult {
@@ -16,13 +17,15 @@ struct LookupResult {
 
 class Lookup {
  public:
-  Lookup(DictionaryQuery& query, Deinflector& deinflector) : query_(query), deinflector_(deinflector) {};
+  Lookup(DictionaryQuery& query, Deinflector& deinflector)
+      : query_(query), language_(static_cast<const LanguageProcessor&>(deinflector)) {};
+  Lookup(DictionaryQuery& query, const LanguageProcessor& language) : query_(query), language_(language) {};
   std::vector<LookupResult> lookup(const std::string& lookup_string, int max_results = 16,
                                    size_t scan_length = 16) const;
 
  private:
-  static void filter_by_pos(std::vector<TermResult>& terms, const DeinflectionResult& d);
+  void filter_by_pos(std::vector<TermResult>& terms, const DeinflectionResult& d) const;
 
   DictionaryQuery& query_;
-  Deinflector& deinflector_;
+  const LanguageProcessor& language_;
 };

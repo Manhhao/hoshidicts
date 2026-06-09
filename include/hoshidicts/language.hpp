@@ -1,0 +1,37 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+struct TextVariant {
+  std::string text;
+  int steps = 0;
+};
+
+struct TransformGroup {
+  std::string name;
+  std::string description;
+};
+
+struct DeinflectionResult {
+  std::string text;
+  uint32_t conditions = 0;
+  std::vector<TransformGroup> trace;
+};
+
+class LanguageProcessor {
+ public:
+  virtual ~LanguageProcessor() = default;
+
+  virtual std::string_view id() const = 0;
+  virtual std::vector<TextVariant> preprocess(const std::string& text) const = 0;
+  virtual std::vector<DeinflectionResult> deinflect(const std::string& text) const = 0;
+  virtual std::vector<TextVariant> postprocess(const std::string& text) const = 0;
+  virtual uint32_t pos_to_conditions(const std::vector<std::string>& part_of_speech) const = 0;
+};
+
+namespace language {
+const LanguageProcessor& get(std::string_view id);
+}

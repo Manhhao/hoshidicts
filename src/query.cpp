@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <ranges>
 #include <string_view>
@@ -137,7 +138,15 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 }
 
 std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
-  std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
+  auto results = merge_term_entries(query_raw_entries(expression));
+  query_freq(results);
+  query_pitch(results);
+
+  return results;
+}
+
+std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& expression) const {
+  std::vector<TermResult> results;
   for (const auto& [name, styles, data] : term_dicts_) {
     uint64_t offset_addr = data->table(expression);
     if (offset_addr == 0) {
@@ -185,30 +194,38 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
       entry.compressed_data = data->blobs.data + glossary_offset;
       entry.compressed_size = glossary_size;
 
-      auto [it, inserted] = term_map.try_emplace({expr, reading});
-      if (inserted) {
-        it->second = {.expression = std::string(expr),
-                      .reading = std::string(reading),
-                      .rules = std::string(rules),
-                      .glossaries = {},
-                      .frequencies = {}};
-      } else {
-        if (!rules.empty()) {
-          if (!it->second.rules.empty()) {
-            it->second.rules += " ";
-          }
-          it->second.rules += rules;
-        }
-      }
-      it->second.glossaries.push_back(std::move(entry));
+      results.push_back({.expression = std::string(expr),
+                         .reading = std::string(reading),
+                         .rules = std::string(rules),
+                         .glossaries = {std::move(entry)},
+                         .frequencies = {}});
     }
   }
 
-  auto results = term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
-  query_freq(results);
-  query_pitch(results);
-
   return results;
+}
+
+std::vector<TermResult> DictionaryQuery::merge_term_entries(std::vector<TermResult> terms) {
+  std::map<std::pair<std::string, std::string>, TermResult> term_map;
+  for (auto& term : terms) {
+    auto key = std::make_pair(term.expression, term.reading);
+    auto [it, inserted] = term_map.try_emplace(std::move(key));
+    if (inserted) {
+      it->second = std::move(term);
+      continue;
+    }
+
+    if (!term.rules.empty()) {
+      if (!it->second.rules.empty()) {
+        it->second.rules += " ";
+      }
+      it->second.rules += term.rules;
+    }
+    it->second.glossaries.insert(it->second.glossaries.end(), std::make_move_iterator(term.glossaries.begin()),
+                                 std::make_move_iterator(term.glossaries.end()));
+  }
+
+  return term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
 }
 
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {

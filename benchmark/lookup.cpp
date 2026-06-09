@@ -5,25 +5,32 @@
 #include <format>
 #include <iostream>
 #include <numeric>
+#include <string_view>
 #include <vector>
 
-#include "hoshidicts/deinflector.hpp"
+#include "hoshidicts/language.hpp"
 #include "hoshidicts/query.hpp"
 
+namespace {
+constexpr std::string_view DEFAULT_LANGUAGE = "ja";
+}
+
 int main(int argc, char** argv) {
-  if (argc < 4) {
-    std::cout << std::format("{} <dict_path> <word> <iterations>\n", argv[0]);
+  if (argc != 4 && argc != 5) {
+    std::cout << std::format("{} [language=ja] <dict_path> <word> <iterations>\n", argv[0]);
     return 1;
   }
 
-  const std::string dict_path = argv[1];
-  const std::string word = argv[2];
-  const int iterations = std::stoi(argv[3]);
+  int arg = 1;
+  const std::string language_id = argc == 5 ? argv[arg++] : std::string(DEFAULT_LANGUAGE);
+  const std::string dict_path = argv[arg++];
+  const std::string word = argv[arg++];
+  const int iterations = std::stoi(argv[arg]);
 
   DictionaryQuery query;
   query.add_term_dict(dict_path);
-  Deinflector deinflector;
-  Lookup lookup(query, deinflector);
+  const auto& language = language::get(language_id);
+  Lookup lookup(query, language);
 
   std::vector<double> durations;
   for (int i = 0; i < iterations; ++i) {
@@ -43,7 +50,7 @@ int main(int argc, char** argv) {
   const double total = std::accumulate(durations.begin(), durations.end(), 0.0);
   const double average = total / durations.size();
 
-  std::cout << std::format("word: {} iterations: {}\n", word, iterations);
+  std::cout << std::format("word: {} language: {} iterations: {}\n", word, language.id(), iterations);
   std::cout << std::format("total: {:.2f}ms\n", total);
   std::cout << std::format("avg: {:.2f}ms\n", average);
   std::cout << std::format("min: {:.2f}ms\n", *min);

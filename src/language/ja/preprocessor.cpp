@@ -1,22 +1,19 @@
-#include "text_processor.hpp"
-
 #include <ankerl/unordered_dense.h>
 #include <utf8.h>
 #include <utf8proc.h>
 
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <glaze/glaze.hpp>
-#include <map>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
-namespace internal {
+#include "../text_variants.hpp"
+#include "ja.hpp"
+
+namespace japanese_language {
 struct KanjiMapping {
   std::string oyaji;
   std::vector<std::string> itaiji;
@@ -24,10 +21,6 @@ struct KanjiMapping {
 }
 
 namespace {
-struct TextProcessor {
-  std::vector<int> options;
-  std::function<std::u32string(const std::u32string&, int)> process;
-};
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L21
 constexpr uint32_t KATAKANA_SMALL_KA = 0x30f5;
@@ -48,7 +41,6 @@ const std::unordered_map<char32_t, std::u32string> VOWEL_TO_KANA{
     {U'e', U"ぇえけげせぜてでねへべぺめれゑヶェエケゲセゼテデネヘベペメレヱヶヹ"},
     {U'o', U"ぉおこごそぞとどのほぼぽもょよろをォオコゴソゾトドノホボポモョヨロヲヺ"}};
 
-// https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L131
 std::unordered_map<char32_t, char32_t> build_kana_to_vowel_map() {
   std::unordered_map<char32_t, char32_t> map;
   for (const auto& [vowel, kana_string] : VOWEL_TO_KANA) {
@@ -111,7 +103,7 @@ std::u32string katakana_to_hiragana(const std::u32string& text) {
       case KATAKANA_SMALL_KE:
         break;
       case KANA_PROLONGED_SOUND_MARK:
-        if (result.length() > 0) {
+        if (!result.empty()) {
           const auto prolonged = get_prolonged_hiragana(result.at(result.length() - 1));
           if (prolonged != 0) {
             c = prolonged;
@@ -156,15 +148,14 @@ std::u32string alphanumeric_to_fullwidth(const std::u32string& text) {
   return result;
 }
 
-constexpr auto mapping_list = std::to_array<unsigned char>({
-#embed "../../external/kanji-processor/src/full_list.json"
-});
+constexpr unsigned char mapping_list[] = {
+#embed "../../../external/kanji-processor/src/full_list.json"
+};
 
 std::u32string standardize_kanji(const std::u32string& text) {
   static const auto map = [] {
-    std::vector<internal::KanjiMapping> list;
-    if (glz::read_json(list,
-                       std::string_view{reinterpret_cast<const char*>(mapping_list.data()), mapping_list.size()})) {
+    std::vector<japanese_language::KanjiMapping> list;
+    if (glz::read_json(list, std::string_view{reinterpret_cast<const char*>(mapping_list), sizeof(mapping_list)})) {
       return ankerl::unordered_dense::map<char32_t, char32_t>{};
     };
 
@@ -186,56 +177,35 @@ std::u32string standardize_kanji(const std::u32string& text) {
   return result;
 }
 
-// TODO: implement rest of preprocessors
-std::vector<TextProcessor> get_japanese_processors() {
-  return {
-      // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese-text-preprocessors.js#L66
-      {.options = {0, 1, 2},
-       .process = [](const std::u32string& text, int opt) -> std::u32string {
-         switch (opt) {
-           case 1:
-             return katakana_to_hiragana(text);
-           case 2:
-             return hiragana_to_katakana(text);
-           default:
-             return text;
-         }
-       }},
-      {.options = {0, 1},
-       .process = [](const std::u32string& text, int opt) -> std::u32string { return opt == 1 ? nfkc(text) : text; }},
-      {.options = {0, 1},
-       .process = [](const std::u32string& text, int opt) -> std::u32string {
-         return opt == 1 ? alphanumeric_to_fullwidth(text) : text;
-       }},
-      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
-         return opt == 1 ? standardize_kanji(text) : text;
-       }}};
-}
+std::string process_u32(const std::string& src, const std::function<std::u32string(const std::u32string&)>& process) {
+  return utf8::utf32to8(process(utf8::utf8to32(src)));
 }
 
-// https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/translator.js#L564
-std::vector<TextVariant> text_processor::process(const std::string& src) {
-  std::u32string text = utf8::utf8to32(src);
-  std::map<std::u32string, int> variants = {{text, 0}};
+std::vector<language::internal::TextProcessorDefinition> get_japanese_processors() {
+  return {{.process =
+               [](const std::string& text) {
+                 return std::vector<std::string>{text, process_u32(text, katakana_to_hiragana),
+                                                 process_u32(text, hiragana_to_katakana)};
+               }},
+          {.process = [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, nfkc)}; }},
+          {.process =
+               [](const std::string& text) {
+                 return std::vector<std::string>{text, process_u32(text, alphanumeric_to_fullwidth)};
+               }},
+          {.process = [](const std::string& text) {
+            return std::vector<std::string>{text, process_u32(text, standardize_kanji)};
+          }}};
+}
 
-  for (const auto& processor : get_japanese_processors()) {
-    std::map<std::u32string, int> next;
+}
 
-    for (const auto& [variant, steps] : variants) {
-      for (int option : processor.options) {
-        auto processed = processor.process(variant, option);
-        int new_steps = (processed == variant) ? steps : steps + 1;
+namespace language::ja {
 
-        auto [it, inserted] = next.try_emplace(processed, new_steps);
-        if (!inserted && new_steps < it->second) {
-          it->second = new_steps;
-        }
-      }
-    }
-    variants = std::move(next);
-  }
+std::vector<TextVariant> preprocess(const std::string& text) {
+  static const auto processors = get_japanese_processors();
+  return language::internal::process_text_variants(text, processors);
+}
 
-  return variants |
-         std::views::transform([](const auto& v) { return TextVariant{utf8::utf32to8(v.first), v.second}; }) |
-         std::ranges::to<std::vector>();
+std::vector<TextVariant> postprocess(const std::string& text) { return {{.text = text, .steps = 0}}; }
+
 }

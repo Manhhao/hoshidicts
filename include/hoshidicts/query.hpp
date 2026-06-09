@@ -83,6 +83,8 @@ class DictionaryQuery {
  private:
   friend class Lookup;
   std::vector<TermResult> query_raw(const std::string& expression) const;
+  std::vector<TermResult> query_raw_entries(const std::string& expression) const;
+  static std::vector<TermResult> merge_term_entries(std::vector<TermResult> terms);
   void materialize(TermResult& term) const;
 
   struct DictionaryData;
