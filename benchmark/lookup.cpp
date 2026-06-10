@@ -5,27 +5,22 @@
 #include <format>
 #include <iostream>
 #include <numeric>
-#include <string_view>
+#include <string>
 #include <vector>
 
 #include "hoshidicts/language.hpp"
 #include "hoshidicts/query.hpp"
 
-namespace {
-constexpr std::string_view DEFAULT_LANGUAGE = "ja";
-}
-
 int main(int argc, char** argv) {
-  if (argc != 4 && argc != 5) {
-    std::cout << std::format("{} [language=ja] <dict_path> <word> <iterations>\n", argv[0]);
+  if (argc != 5) {
+    std::cout << std::format("{} <language> <dict_path> <word> <iterations>\n", argv[0]);
     return 1;
   }
 
-  int arg = 1;
-  const std::string language_id = argc == 5 ? argv[arg++] : std::string(DEFAULT_LANGUAGE);
-  const std::string dict_path = argv[arg++];
-  const std::string word = argv[arg++];
-  const int iterations = std::stoi(argv[arg]);
+  const std::string language_id = argv[1];
+  const std::string dict_path = argv[2];
+  const std::string word = argv[3];
+  const int iterations = std::stoi(argv[4]);
 
   DictionaryQuery query;
   query.add_term_dict(dict_path);

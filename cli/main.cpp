@@ -13,21 +13,13 @@
 #include "hoshidicts/lookup.hpp"
 #include "hoshidicts/query.hpp"
 
-namespace {
-constexpr std::string_view DEFAULT_LANGUAGE = "ja";
-
-bool is_language_id(std::string_view id) {
-  return id == "ja" || id == "en";
-}
-}
-
 void print_usage(const char* program) {
   std::cout << std::format("Usage:\n");
   std::cout << std::format("{} import <path/to/dictionary.zip>\n", program);
-  std::cout << std::format("{} deinflect [language=ja] <word>\n", program);
-  std::cout << std::format("{} preprocess [language=ja] <word>\n", program);
+  std::cout << std::format("{} deinflect <language> <word>\n", program);
+  std::cout << std::format("{} preprocess <language> <word>\n", program);
   std::cout << std::format("{} query <path/to/dictionary> <word>\n", program);
-  std::cout << std::format("{} lookup [language=ja] <path/to/dictionary>... <lookup_string>\n", program);
+  std::cout << std::format("{} lookup <language> <path/to/dictionary>... <lookup_string>\n", program);
   std::cout << std::format("{} freq <path/to/dictionary> <word>\n", program);
 }
 
@@ -177,29 +169,18 @@ int main(int argc, char* argv[]) {
   try {
     if (command == "import" && argc >= 3) {
       cmd_import(argv[2]);
-    } else if (command == "deinflect" && argc == 3) {
-      cmd_deinflect(std::string(DEFAULT_LANGUAGE), argv[2]);
     } else if (command == "deinflect" && argc >= 4) {
       cmd_deinflect(argv[2], argv[3]);
-    } else if (command == "preprocess" && argc == 3) {
-      cmd_preprocess(std::string(DEFAULT_LANGUAGE), argv[2]);
     } else if (command == "preprocess" && argc >= 4) {
       cmd_preprocess(argv[2], argv[3]);
     } else if (command == "query" && argc >= 4) {
       cmd_query(argv[2], argv[3]);
-    } else if (command == "lookup" && argc >= 4) {
-      std::string language_id(DEFAULT_LANGUAGE);
-      int db_path_start = 2;
-      if (argc >= 5 && is_language_id(argv[2])) {
-        language_id = argv[2];
-        db_path_start = 3;
-      }
-
-      auto db_paths = std::views::counted(argv + db_path_start, argc - db_path_start - 1) |
+    } else if (command == "lookup" && argc >= 5) {
+      auto db_paths = std::views::counted(argv + 3, argc - 4) |
                       std::views::transform([](const char* arg) { return std::string(arg); }) |
                       std::ranges::to<std::vector>();
       std::string term = argv[argc - 1];
-      cmd_lookup(language_id, db_paths, term);
+      cmd_lookup(argv[2], db_paths, term);
     } else if (command == "freq" && argc >= 5) {
       cmd_freq(argv[2], argv[3], argv[4]);
     } else {
