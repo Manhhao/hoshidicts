@@ -24,6 +24,9 @@ const language::internal::ConditionMapper& mapper() {
 namespace language::en {
 
 uint32_t pos_to_conditions(const std::vector<std::string>& part_of_speech) {
+  if (part_of_speech.empty()) {
+    return V | N | ADJ | ADV;
+  }
   return mapper().from_parts_of_speech(part_of_speech);
 }
 
