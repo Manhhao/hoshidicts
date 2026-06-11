@@ -14,6 +14,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -42,6 +43,26 @@ struct ProcessedFile {
   size_t pitch_count = 0;
   size_t freq_count = 0;
 };
+
+struct DictionaryRedirectDefinition {
+  std::string form_of;
+  std::vector<std::string> inflection_rules;
+};
+
+struct ProcessedGlossary {
+  std::string display_glossary;
+  std::vector<DictionaryRedirectDefinition> redirects;
+};
+
+}
+
+template <>
+struct glz::meta<DictionaryRedirectDefinition> {
+  using T = DictionaryRedirectDefinition;
+  static constexpr auto value = glz::array(&T::form_of, &T::inflection_rules);
+};
+
+namespace {
 
 void setup_stream_exceptions(std::ofstream& stream) { stream.exceptions(std::ios::failbit | std::ios::badbit); }
 
@@ -86,6 +107,66 @@ void write_bytes(std::vector<char>& out, const void* data, size_t n) {
   const size_t old_size = out.size();
   out.resize(old_size + n);
   std::memcpy(out.data() + old_size, data, n);
+}
+
+std::optional<DictionaryRedirectDefinition> parse_dictionary_redirect_definition(std::string_view definition) {
+  auto fields = glz::read_json<std::vector<glz::raw_json_view>>(definition);
+  if (!fields || fields->size() != 2) {
+    return std::nullopt;
+  }
+
+  auto redirect = glz::read_json<DictionaryRedirectDefinition>(definition);
+  if (!redirect) {
+    return std::nullopt;
+  }
+  return std::move(*redirect);
+}
+
+ProcessedGlossary process_glossary(std::string_view glossary) {
+  auto definitions = glz::read_json<std::vector<glz::raw_json_view>>(glossary);
+  if (!definitions) {
+    return {.display_glossary = std::string(glossary), .redirects = {}};
+  }
+
+  ProcessedGlossary result;
+  std::string filtered = "[";
+  bool first = true;
+  bool removed_redirect = false;
+  for (const auto& definition : *definitions) {
+    auto redirect = parse_dictionary_redirect_definition(definition.str);
+    if (redirect) {
+      removed_redirect = true;
+      result.redirects.push_back(std::move(*redirect));
+      continue;
+    }
+
+    if (!first) {
+      filtered += ",";
+    }
+    filtered += definition.str;
+    first = false;
+  }
+  filtered += "]";
+
+  if (removed_redirect) {
+    result.display_glossary = first ? "" : std::move(filtered);
+  } else {
+    result.display_glossary = std::string(glossary);
+  }
+  return result;
+}
+
+void write_redirects(std::vector<char>& out, const std::vector<DictionaryRedirectDefinition>& redirects) {
+  write_val<uint32_t>(out, redirects.size());
+  for (const auto& redirect : redirects) {
+    write_val<uint32_t>(out, redirect.form_of.size());
+    write_str(out, redirect.form_of);
+    write_val<uint32_t>(out, redirect.inflection_rules.size());
+    for (const auto& rule : redirect.inflection_rules) {
+      write_val<uint32_t>(out, rule.size());
+      write_str(out, rule);
+    }
+  }
 }
 
 void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
@@ -184,24 +265,28 @@ ProcessedFile process_term_bank(const std::string& content) {
   }
 
   for (auto& term : out) {
-    const std::string_view glossary = term.glossary.str;
-    uint64_t glossary_hash = XXH3_64bits(glossary.data(), glossary.size());
-    auto it = processed.glossaries.find(glossary_hash);
-    if (it == processed.glossaries.end()) {
-      const size_t bound = ZSTD_compressBound(glossary.size());
-      compressed.resize(bound);
-      const size_t compressed_size =
-          ZSTD_compressCCtx(cctx, compressed.data(), bound, glossary.data(), glossary.size(), 0);
-      if (ZSTD_isError(compressed_size)) {
-        ZSTD_freeCCtx(cctx);
-        throw std::runtime_error("failed to compress glossary");
+    const ProcessedGlossary glossary = process_glossary(term.glossary.str);
+    uint64_t glossary_hash = 0;
+    uint32_t blob_size = 0;
+    if (!glossary.display_glossary.empty()) {
+      glossary_hash = XXH3_64bits(glossary.display_glossary.data(), glossary.display_glossary.size());
+      auto it = processed.glossaries.find(glossary_hash);
+      if (it == processed.glossaries.end()) {
+        const size_t bound = ZSTD_compressBound(glossary.display_glossary.size());
+        compressed.resize(bound);
+        const size_t compressed_size = ZSTD_compressCCtx(
+            cctx, compressed.data(), bound, glossary.display_glossary.data(), glossary.display_glossary.size(), 0);
+        if (ZSTD_isError(compressed_size)) {
+          ZSTD_freeCCtx(cctx);
+          throw std::runtime_error("failed to compress glossary");
+        }
+        compressed.resize(compressed_size);
+        processed.glossaries.emplace(glossary_hash, compressed);
       }
-      compressed.resize(compressed_size);
-      processed.glossaries.emplace(glossary_hash, compressed);
+      blob_size = processed.glossaries[glossary_hash].size();
     }
 
     uint64_t offset = processed.data.size();
-    uint32_t blob_size = processed.glossaries[glossary_hash].size();
     std::string_view expr = term.expression;
     std::string_view reading = term.reading.empty() ? expr : term.reading;
     std::string_view definition_tags = term.definition_tags.value_or("");
@@ -215,7 +300,9 @@ ProcessedFile process_term_bank(const std::string& content) {
     uint64_t glossary_offset = processed.data.size();
     write_val<uint64_t>(processed.data, 0);
     write_val<uint32_t>(processed.data, blob_size);
-    processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
+    if (blob_size > 0) {
+      processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
+    }
 
     write_val<uint8_t>(processed.data, definition_tags.size());
     write_str(processed.data, definition_tags);
@@ -223,6 +310,7 @@ ProcessedFile process_term_bank(const std::string& content) {
     write_str(processed.data, term.rules);
     write_val<uint8_t>(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
+    write_redirects(processed.data, glossary.redirects);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     if (reading != expr) {
@@ -513,7 +601,10 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.media_count = media_thread.get();
 
-    std::ofstream sui(path + "/.hoshidicts_1", std::ios::binary);
+    std::ofstream sui(path + "/.hoshidicts_2", std::ios::binary);
+    setup_stream_exceptions(sui);
+    sui.close();
+    std::filesystem::remove(path + "/.hoshidicts_1");
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;

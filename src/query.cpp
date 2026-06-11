@@ -12,6 +12,7 @@
 #include <memory>
 #include <ranges>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "hash/hash.hpp"
@@ -35,6 +36,7 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
 }
 
 struct DictionaryQuery::DictionaryData {
+  uint8_t format_version = 1;
   hash::linear table;
   hash::bloom bloom;
   memory::mapped_file blobs;
@@ -65,7 +67,9 @@ DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
 void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
-  if (!std::filesystem::is_regular_file(path + "/.hoshidicts_1")) {
+  const bool has_v2_format = std::filesystem::is_regular_file(path + "/.hoshidicts_2");
+  const bool has_v1_format = std::filesystem::is_regular_file(path + "/.hoshidicts_1");
+  if (!has_v2_format && !has_v1_format) {
     return;
   }
 
@@ -83,6 +87,7 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   }
 
   dict.data = std::make_unique<DictionaryData>();
+  dict.data->format_version = has_v2_format ? 2 : 1;
 
   dict.data->hash_table = memory::map_rd(path + "/hash.table");
   if (!dict.data->hash_table) {
@@ -193,6 +198,27 @@ std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& ex
       entry.term_tags = term_tags;
       entry.compressed_data = data->blobs.data + glossary_offset;
       entry.compressed_size = glossary_size;
+      entry.dictionary_format_version = data->format_version;
+
+      if (data->format_version >= 2) {
+        const auto redirect_count = read_val<uint32_t>(blob_addr);
+        entry.redirects.reserve(redirect_count);
+        for (uint32_t redirect_index = 0; redirect_index < redirect_count; ++redirect_index) {
+          auto form_of_len = read_val<uint32_t>(blob_addr);
+          auto form_of = read_str(blob_addr, form_of_len);
+
+          auto inflection_rule_count = read_val<uint32_t>(blob_addr);
+          std::vector<std::string> inflection_rules;
+          inflection_rules.reserve(inflection_rule_count);
+          for (uint32_t rule_index = 0; rule_index < inflection_rule_count; ++rule_index) {
+            auto rule_len = read_val<uint32_t>(blob_addr);
+            inflection_rules.emplace_back(read_str(blob_addr, rule_len));
+          }
+
+          entry.redirects.push_back(
+              DictionaryRedirect{.form_of = std::string(form_of), .inflection_rules = std::move(inflection_rules)});
+        }
+      }
 
       results.push_back({.expression = std::string(expr),
                          .reading = std::string(reading),
@@ -367,6 +393,9 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) 
 
 void DictionaryQuery::materialize(TermResult& term) const {
   for (auto& g : term.glossaries) {
+    if (!g.glossary.empty()) {
+      continue;
+    }
     g.glossary = decompress_glossary(g.compressed_data, g.compressed_size);
   }
 }

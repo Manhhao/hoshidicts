@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,13 +27,20 @@ struct MediaFileView {
   size_t size;
 };
 
+struct DictionaryRedirect {
+  std::string form_of;
+  std::vector<std::string> inflection_rules;
+};
+
 struct GlossaryEntry {
   std::string dict_name;
   std::string glossary;
   std::string definition_tags;
   std::string term_tags;
+  std::vector<DictionaryRedirect> redirects;
   const uint8_t* compressed_data = nullptr;
   uint32_t compressed_size = 0;
+  uint8_t dictionary_format_version = 1;
 };
 
 struct FrequencyEntry {
