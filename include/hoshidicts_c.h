@@ -1,0 +1,106 @@
+#ifndef HOSHIDICTS_C_H
+#define HOSHIDICTS_C_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct hd_str {
+  const char* ptr;
+  size_t len;
+} hd_str;
+
+// importer
+typedef struct hd_import_result hd_import_result;
+
+hd_import_result* hd_import(const char* zip_path, const char* output_dir, int low_ram);
+void hd_import_result_free(hd_import_result* r);
+
+int hd_import_result_success(const hd_import_result* r);
+const char* hd_import_result_title(const hd_import_result* r);
+uint64_t hd_import_result_term_count(const hd_import_result* r);
+uint64_t hd_import_result_meta_count(const hd_import_result* r);
+uint64_t hd_import_result_freq_count(const hd_import_result* r);
+uint64_t hd_import_result_pitch_count(const hd_import_result* r);
+uint64_t hd_import_result_media_count(const hd_import_result* r);
+
+size_t hd_import_result_error_count(const hd_import_result* r);
+const char* hd_import_result_error(const hd_import_result* r, size_t index);
+
+// deinflector
+typedef struct hd_deinflector hd_deinflector;
+
+hd_deinflector* hd_deinflector_new(void);
+void hd_deinflector_free(hd_deinflector* d);
+
+// query
+typedef struct hd_query hd_query;
+typedef struct hd_results hd_results;
+
+typedef struct hd_frequency {
+  int32_t value;
+  hd_str display_value;
+} hd_frequency;
+
+typedef struct hd_dictionary_style {
+  hd_str dict_name;
+  hd_str styles;
+} hd_dictionary_style;
+
+typedef struct hd_media_file {
+  const uint8_t* data;
+  size_t size;
+} hd_media_file;
+
+typedef struct hd_glossary_entry {
+  hd_str dict_name;
+  hd_str glossary;
+  hd_str definition_tags;
+  hd_str term_tags;
+} hd_glossary_entry;
+
+typedef struct hd_frequency_entry {
+  hd_str dict_name;
+  hd_frequency* frequencies;
+  size_t frequencies_count;
+} hd_frequency_entry;
+
+typedef struct hd_pitch_entry {
+  hd_str dict_name;
+  int32_t* pitch_positions;
+  size_t pitch_positions_count;
+  hd_str* transcriptions;
+  size_t transcriptions_count;
+} hd_pitch_entry;
+
+typedef struct hd_term_result {
+  hd_str expression;
+  hd_str reading;
+  hd_str rules;
+  hd_glossary_entry* glossaries;
+  size_t glossaries_count;
+  hd_frequency_entry* frequencies;
+  size_t frequencies_count;
+  hd_pitch_entry pitches;
+  size_t pitches_count;
+} hd_term_result;
+
+hd_query* hd_query_new(void);
+void hd_query_free(hd_query* q);
+
+int hd_query_add_term_dict(hd_query* q, const char* path);
+int hd_query_add_freq_dict(hd_query* q, const char* path);
+int hd_query_add_pitch_dict(hd_query* q, const char* path);
+
+hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_term_result** out_terms,
+                         size_t* out_count);
+void hd_results_free(hd_results*);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
