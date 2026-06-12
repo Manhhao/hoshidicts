@@ -64,15 +64,24 @@ typedef struct hd_glossary_entry {
 
 typedef struct hd_frequency_entry {
   hd_str dict_name;
-  hd_frequency* frequencies;
+  const hd_frequency* frequencies;
   size_t frequencies_count;
 } hd_frequency_entry;
 
+typedef struct hd_pitch {
+  int32_t position;
+  hd_str pattern;
+  const int32_t* nasal;
+  size_t nasal_count;
+  const int32_t* devoice;
+  size_t devoice_count;
+} hd_pitch;
+
 typedef struct hd_pitch_entry {
   hd_str dict_name;
-  int32_t* pitch_positions;
-  size_t pitch_positions_count;
-  hd_str* transcriptions;
+  const hd_pitch* pitches;
+  size_t pitches_count;
+  const hd_str* transcriptions;
   size_t transcriptions_count;
 } hd_pitch_entry;
 
@@ -80,11 +89,11 @@ typedef struct hd_term_result {
   hd_str expression;
   hd_str reading;
   hd_str rules;
-  hd_glossary_entry* glossaries;
+  const hd_glossary_entry* glossaries;
   size_t glossaries_count;
-  hd_frequency_entry* frequencies;
+  const hd_frequency_entry* frequencies;
   size_t frequencies_count;
-  hd_pitch_entry pitches;
+  const hd_pitch_entry* pitches;
   size_t pitches_count;
 } hd_term_result;
 
@@ -97,7 +106,7 @@ int hd_query_add_pitch_dict(hd_query* q, const char* path);
 
 hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_term_result** out_terms,
                          size_t* out_count);
-void hd_results_free(hd_results*);
+void hd_results_free(hd_results* r);
 
 #ifdef __cplusplus
 }
