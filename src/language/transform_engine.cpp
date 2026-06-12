@@ -64,7 +64,7 @@ std::vector<DeinflectionResult> TransformEngine::deinflect(const std::string& te
   std::vector<DeinflectionResult> results;
 
   for (size_t i = 0; i < work_items.size(); ++i) {
-    const auto item = work_items[i];
+    auto item = std::move(work_items[i]);
     results.push_back({.text = item.text, .conditions = item.conditions, .trace = item.trace});
 
     for (size_t rule_index = 0; rule_index < rules_.size(); ++rule_index) {

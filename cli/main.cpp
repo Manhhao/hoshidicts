@@ -70,7 +70,7 @@ void cmd_preprocess(const std::string& language_id, const std::string& text) {
   const auto& language = language::get(language_id);
   auto results = language.preprocess(text);
 
-  std::cout << std::format("preproccesing for: {} language: {} length: {}\n", text, language.id(),
+  std::cout << std::format("preprocessing for: {} language: {} length: {}\n", text, language.id(),
                            utf8::distance(text.begin(), text.end()));
   std::cout << std::format("found {} variants\n", results.size());
 
