@@ -15,10 +15,19 @@ struct TransformGroup {
   std::string description;
 };
 
+enum class TraceSource : uint8_t { Algorithm, Dictionary, Both };
+
+struct TraceCandidate {
+  std::string deinflected;
+  int preprocessor_steps = 0;
+  TraceSource source = TraceSource::Algorithm;
+  std::vector<TransformGroup> trace;
+};
+
 struct DeinflectionResult {
   std::string text;
   uint32_t conditions = 0;
-  std::vector<TransformGroup> trace;
+  std::vector<TraceCandidate> trace_candidates;
 };
 
 class LanguageProcessor {

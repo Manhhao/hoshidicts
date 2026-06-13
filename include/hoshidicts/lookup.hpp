@@ -8,10 +8,8 @@
 
 struct LookupResult {
   std::string matched;
-  std::string deinflected;
-  std::vector<TransformGroup> trace;
   TermResult term;
-  int preprocessor_steps;
+  std::vector<TraceCandidate> trace_candidates;
 };
 
 class Lookup {

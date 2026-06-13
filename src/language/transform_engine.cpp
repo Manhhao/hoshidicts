@@ -1,6 +1,7 @@
 #include "transform_engine.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <utility>
 
 namespace language::internal {
@@ -52,6 +53,44 @@ void TransformEngine::add_custom_rule(std::function<std::optional<std::string>(c
                     .group_id = group_id});
 }
 
+namespace {
+bool traces_equal(const std::vector<TransformGroup>& a, const std::vector<TransformGroup>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].name != b[i].name) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void add_deinflection_result(std::vector<DeinflectionResult>& results, const std::string& text, uint32_t conditions,
+                             const std::vector<TransformGroup>& trace) {
+  TraceCandidate candidate{
+      .deinflected = text, .preprocessor_steps = 0, .source = TraceSource::Algorithm, .trace = trace};
+
+  auto it = std::ranges::find_if(results, [&](const DeinflectionResult& result) {
+    return result.text == text && result.conditions == conditions;
+  });
+  if (it == results.end()) {
+    DeinflectionResult result{.text = text, .conditions = conditions};
+    result.trace_candidates.push_back(std::move(candidate));
+    results.push_back(std::move(result));
+    return;
+  }
+
+  const bool duplicate = std::ranges::any_of(it->trace_candidates, [&](const TraceCandidate& existing) {
+    return traces_equal(existing.trace, candidate.trace);
+  });
+  if (!duplicate) {
+    it->trace_candidates.push_back(std::move(candidate));
+  }
+}
+}
+
 std::vector<DeinflectionResult> TransformEngine::deinflect(const std::string& text) const {
   struct WorkItem {
     std::string text;
@@ -65,7 +104,7 @@ std::vector<DeinflectionResult> TransformEngine::deinflect(const std::string& te
 
   for (size_t i = 0; i < work_items.size(); ++i) {
     auto item = std::move(work_items[i]);
-    results.push_back({.text = item.text, .conditions = item.conditions, .trace = item.trace});
+    add_deinflection_result(results, item.text, item.conditions, item.trace);
 
     for (size_t rule_index = 0; rule_index < rules_.size(); ++rule_index) {
       const auto& rule = rules_[rule_index];

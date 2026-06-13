@@ -13,6 +13,36 @@
 #include "hoshidicts/lookup.hpp"
 #include "hoshidicts/query.hpp"
 
+std::string_view trace_source_name(TraceSource source) {
+  switch (source) {
+    case TraceSource::Algorithm:
+      return "algorithm";
+    case TraceSource::Dictionary:
+      return "dictionary";
+    case TraceSource::Both:
+      return "both";
+  }
+  return "algorithm";
+}
+
+void print_trace_candidate(const TraceCandidate& candidate) {
+  if (candidate.source == TraceSource::Algorithm && candidate.trace.empty()) {
+    return;
+  }
+
+  std::cout << std::format("  [{}] deinflected={} steps={}: ", trace_source_name(candidate.source),
+                           candidate.deinflected, candidate.preprocessor_steps);
+  for (size_t i = 0; i < candidate.trace.size(); ++i) {
+    std::cout << std::format("{}{}", candidate.trace[i].name, i < candidate.trace.size() - 1 ? " -> " : "");
+  }
+  std::cout << std::format("\n");
+  for (const auto& rule : candidate.trace) {
+    if (!rule.description.empty()) {
+      std::cout << std::format("    {}: {}\n", rule.name, rule.description);
+    }
+  }
+}
+
 void print_usage(const char* program) {
   std::cout << std::format("Usage:\n");
   std::cout << std::format("{} import <path/to/dictionary.zip>\n", program);
@@ -55,14 +85,10 @@ void cmd_deinflect(const std::string& language_id, const std::string& inflected)
   std::cout << std::format("found {} candidates\n\n", results.size());
 
   for (const auto& r : results) {
-    std::cout << std::format("{} (conditions: {})", r.text, r.conditions);
-    if (!r.trace.empty()) {
-      std::cout << std::format("  ");
-      for (size_t i = 0; i < r.trace.size(); ++i) {
-        std::cout << std::format("{}{}", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
-      }
+    std::cout << std::format("{} (conditions: {})\n", r.text, r.conditions);
+    for (const auto& candidate : r.trace_candidates) {
+      print_trace_candidate(candidate);
     }
-    std::cout << std::format("\n");
   }
 }
 
@@ -135,12 +161,8 @@ void cmd_lookup(const std::string& language_id, const std::vector<std::string>& 
   for (const auto& r : result) {
     std::cout << std::format("---------------------------------------------------------------\n");
     std::cout << std::format("{}\n", r.matched);
-    if (!r.trace.empty()) {
-      std::cout << std::format("  ");
-      for (size_t i = 0; i < r.trace.size(); ++i) {
-        std::cout << std::format("{}{}", r.trace[i].name, i < r.trace.size() - 1 ? " -> " : "");
-      }
-      std::cout << std::format("\n");
+    for (const auto& candidate : r.trace_candidates) {
+      print_trace_candidate(candidate);
     }
     std::cout << std::format("{} {}\n", r.term.expression, r.term.reading);
     for (const auto& g : r.term.glossaries) {

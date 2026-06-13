@@ -46,6 +46,42 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 3> fu_verb_t
     {"たゆたう", "たゆとう"},
 }};
 
+bool traces_equal(const std::vector<TransformGroup>& a, const std::vector<TransformGroup>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].name != b[i].name) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void add_deinflection_result(std::vector<DeinflectionResult>& results, const std::string& text, uint32_t conditions,
+                             const std::vector<TransformGroup>& trace) {
+  TraceCandidate candidate{
+      .deinflected = text, .preprocessor_steps = 0, .source = TraceSource::Algorithm, .trace = trace};
+
+  auto it = std::ranges::find_if(results, [&](const DeinflectionResult& result) {
+    return result.text == text && result.conditions == conditions;
+  });
+  if (it == results.end()) {
+    DeinflectionResult result{.text = text, .conditions = conditions};
+    result.trace_candidates.push_back(std::move(candidate));
+    results.push_back(std::move(result));
+    return;
+  }
+
+  const bool duplicate = std::ranges::any_of(it->trace_candidates, [&](const TraceCandidate& existing) {
+    return traces_equal(existing.trace, candidate.trace);
+  });
+  if (!duplicate) {
+    it->trace_candidates.push_back(std::move(candidate));
+  }
+}
+
 }
 
 void language::ja::JapaneseDeinflector::add_irregular(std::string_view suffix, uint32_t conditions_in,
@@ -1274,7 +1310,7 @@ std::vector<DeinflectionResult> language::ja::JapaneseDeinflector::deinflect(con
   if (text_len > 1) {
     deinflect_recursive(text, NONE, trace, result);
   } else {
-    result.emplace_back(text, NONE, trace);
+    add_deinflection_result(result, text, NONE, trace);
   }
 
   return result;
@@ -1287,7 +1323,7 @@ void language::ja::JapaneseDeinflector::deinflect_recursive(const std::string& t
   if (text_len <= 1) {
     return;
   }
-  results.emplace_back(text, conditions, trace);
+  add_deinflection_result(results, text, conditions, trace);
 
   size_t start = std::min(max_length_, text_len);
   auto prefix_it = text.begin();
