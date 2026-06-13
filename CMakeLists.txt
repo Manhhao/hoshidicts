@@ -5,6 +5,8 @@ project(hoshidicts LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
@@ -34,6 +36,7 @@ add_library(hoshidicts
     src/deinflector.cpp
     src/query.cpp
     src/lookup.cpp
+    src/hoshidicts_c.cpp
 )
 
 target_include_directories(hoshidicts PUBLIC
@@ -54,7 +57,15 @@ add_executable(hoshidicts-cli
     cli/main.cpp
 )
 
+add_executable(hoshidicts-cli-c
+    cli/main.c
+)
+
 target_link_libraries(hoshidicts-cli PRIVATE
+    hoshidicts
+)
+
+target_link_libraries(hoshidicts-cli-c PRIVATE
     hoshidicts
 )
 

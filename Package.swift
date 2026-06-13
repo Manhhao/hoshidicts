@@ -43,7 +43,7 @@ let package = Package(
             name: "hoshidicts",
             dependencies: ["CHoshiDicts"],
             path: ".",
-            sources: ["cli"],
+            sources: ["cli/main.cpp"],
             cxxSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath("external/utfcpp/source"),
