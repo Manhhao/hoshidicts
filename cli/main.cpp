@@ -40,10 +40,7 @@ void cmd_import(const std::string& path) {
     std::cout << std::format("kanji_count: {}\n", result.summary.counts.kanji.total);
     std::cout << std::format("media_count: {}\n", result.summary.counts.media.total);
   } else {
-    std::cout << std::format("could not import dictionary:\n");
-    for (const auto& error : result.errors) {
-      std::cout << std::format(" {}\n", error);
-    }
+    std::cout << std::format("could not import dictionary: {}\n", result.error);
   }
 }
 

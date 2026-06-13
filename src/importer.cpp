@@ -694,7 +694,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     if (!result.summary.title.empty()) {
       result.summary.importSuccess = false;
     }
-    result.errors.emplace_back(e.what());
+    result.error = e.what();
   }
 
   if (!result.success && !result.title.empty()) {

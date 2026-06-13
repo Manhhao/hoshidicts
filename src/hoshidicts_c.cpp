@@ -26,21 +26,24 @@ int hd_import_result_success(const hd_import_result* r) { return static_cast<int
 
 const char* hd_import_result_title(const hd_import_result* r) { return r->result.title.c_str(); }
 
-uint64_t hd_import_result_term_count(const hd_import_result* r) { return r->result.term_count; }
-
-uint64_t hd_import_result_meta_count(const hd_import_result* r) { return r->result.meta_count; }
-
-uint64_t hd_import_result_freq_count(const hd_import_result* r) { return r->result.freq_count; }
-
-uint64_t hd_import_result_pitch_count(const hd_import_result* r) { return r->result.pitch_count; }
-
-uint64_t hd_import_result_media_count(const hd_import_result* r) { return r->result.media_count; }
-
-size_t hd_import_result_error_count(const hd_import_result* r) { return r->result.errors.size(); }
-
-const char* hd_import_result_error(const hd_import_result* r, size_t index) {
-  return index < r->result.errors.size() ? r->result.errors[index].c_str() : nullptr;
+static uint64_t meta_count(const SummaryMetaCount& counts, const std::string& mode) {
+  auto it = counts.find(mode);
+  return it == counts.end() ? 0 : it->second;
 }
+
+uint64_t hd_import_result_term_count(const hd_import_result* r) { return r->result.summary.counts.terms.total; }
+
+uint64_t hd_import_result_meta_count(const hd_import_result* r) { return meta_count(r->result.summary.counts.termMeta, "total"); }
+
+uint64_t hd_import_result_freq_count(const hd_import_result* r) { return meta_count(r->result.summary.counts.termMeta, "freq"); }
+
+uint64_t hd_import_result_pitch_count(const hd_import_result* r) {
+  return meta_count(r->result.summary.counts.termMeta, "pitch") + meta_count(r->result.summary.counts.termMeta, "ipa");
+}
+
+uint64_t hd_import_result_media_count(const hd_import_result* r) { return r->result.summary.counts.media.total; }
+
+const char* hd_import_result_error(const hd_import_result* r) { return r->result.error.c_str(); }
 
 // deinflector
 struct hd_deinflector {

@@ -27,8 +27,7 @@ uint64_t hd_import_result_freq_count(const hd_import_result* r);
 uint64_t hd_import_result_pitch_count(const hd_import_result* r);
 uint64_t hd_import_result_media_count(const hd_import_result* r);
 
-size_t hd_import_result_error_count(const hd_import_result* r);
-const char* hd_import_result_error(const hd_import_result* r, size_t index);
+const char* hd_import_result_error(const hd_import_result* r);
 
 // deinflector
 typedef struct hd_deinflector hd_deinflector;
