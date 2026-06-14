@@ -173,7 +173,7 @@ std::optional<std::string> phrasal_verb_interposed_object(const std::string& tex
 
 class EnglishDeinflector final {
  public:
-  EnglishDeinflector() : engine_(TransformEngine::TraceOrder::Prepend) { init_transforms(); }
+  EnglishDeinflector() : engine_(TransformEngine::TraceOrder::Append) { init_transforms(); }
 
   std::vector<DeinflectionResult> deinflect(const std::string& text) const { return engine_.deinflect(text); }
 
@@ -297,11 +297,11 @@ class EnglishDeinflector final {
     engine_.add_prefix_rule("do not ", "", V, V, id);
 
     std::vector<SuffixSpec> able_rules = {
-        {.from = "able", .to = "", .conditions_in = V, .conditions_out = ADJ},
-        {.from = "able", .to = "e", .conditions_in = V, .conditions_out = ADJ},
-        {.from = "iable", .to = "y", .conditions_in = V, .conditions_out = ADJ},
+        {.from = "able", .to = "", .conditions_in = ADJ, .conditions_out = V},
+        {.from = "able", .to = "e", .conditions_in = ADJ, .conditions_out = V},
+        {.from = "iable", .to = "y", .conditions_in = ADJ, .conditions_out = V},
     };
-    append(able_rules, doubled_consonant_inflections("bdgklmnprstz", "able", V, ADJ));
+    append(able_rules, doubled_consonant_inflections("bdgklmnprstz", "able", ADJ, V));
     add_suffix_rules(add_group("-able", "Adjective formed from a verb"), able_rules);
   }
 
