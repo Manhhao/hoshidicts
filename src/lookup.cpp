@@ -84,7 +84,7 @@ void filter_terms_by_pos(const LanguageProcessor& language, std::vector<TermResu
   std::erase_if(terms, [&](const TermResult& term) {
     const auto dict_conditions = effective_pos_conditions_for_term(language, term, aggregated_pos_conditions);
     if (dict_conditions.missing) {
-      return false;
+      return language.missing_pos_policy() == MissingPosPolicy::Filter;
     }
     return (dict_conditions.conditions & deinflection.conditions) == 0;
   });

@@ -21,6 +21,8 @@ class JapaneseLanguageProcessor final : public LanguageProcessor {
   uint32_t pos_to_conditions(const std::vector<std::string>& part_of_speech) const override {
     return language::ja::pos_to_conditions(part_of_speech);
   }
+
+  MissingPosPolicy missing_pos_policy() const override { return MissingPosPolicy::Filter; }
 };
 
 }

@@ -17,6 +17,8 @@ struct TransformGroup {
 
 enum class TraceSource : uint8_t { Algorithm, Dictionary, Both };
 
+enum class MissingPosPolicy : uint8_t { Keep, Filter };
+
 struct TraceCandidate {
   std::string deinflected;
   int preprocessor_steps = 0;
@@ -39,6 +41,7 @@ class LanguageProcessor {
   virtual std::vector<DeinflectionResult> deinflect(const std::string& text) const = 0;
   virtual std::vector<TextVariant> postprocess(const std::string& text) const = 0;
   virtual uint32_t pos_to_conditions(const std::vector<std::string>& part_of_speech) const = 0;
+  virtual MissingPosPolicy missing_pos_policy() const { return MissingPosPolicy::Filter; }
 };
 
 namespace language {
