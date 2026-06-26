@@ -40,6 +40,13 @@ constexpr uint32_t HIRAGANA_CONVERSION_RANGE_END = 0x3096;
 constexpr uint32_t KATAKANA_CONVERSION_RANGE_START = 0x30a1;
 constexpr uint32_t KATAKANA_CONVERSION_RANGE_END = 0x30f6;
 
+constexpr char32_t KANJI_ITERATION_MARK = 0x3005;
+constexpr char32_t HIRAGANA_ITERATION_MARK = 0x309d;
+constexpr char32_t HIRAGANA_VOICED_ITERATION_MARK = 0x309e;
+constexpr char32_t KATAKANA_ITERATION_MARK = 0x30fd;
+constexpr char32_t KATAKANA_VOICED_ITERATION_MARK = 0x30fe;
+constexpr char32_t DAKUTEN = 0x3099;
+
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L121
 const std::unordered_map<char32_t, std::u32string> VOWEL_TO_KANA{
     {U'a', U"ぁあかがさざただなはばぱまゃやらゎわヵァアカガサザタダナハバパマャヤラヮワヵヷ"},
@@ -186,6 +193,47 @@ std::u32string standardize_kanji(const std::u32string& text) {
   return result;
 }
 
+char32_t add_dakuten(char32_t kana) {
+  std::u32string pair = {kana, DAKUTEN};
+  std::string utf8 = utf8::utf32to8(pair);
+  utf8proc_uint8_t* out = utf8proc_NFC(reinterpret_cast<const utf8proc_uint8_t*>(utf8.c_str()));
+  if (!out) {
+    return kana;
+  }
+  std::u32string composed = utf8::utf8to32(std::string(reinterpret_cast<char*>(out)));
+  utf8proc_free(out);
+  return composed.size() == 1 ? composed.front() : kana;
+}
+
+char32_t expand_mark(char32_t prev, char32_t mark) {
+  switch (mark) {
+    case KANJI_ITERATION_MARK:
+    case HIRAGANA_ITERATION_MARK:
+    case KATAKANA_ITERATION_MARK:
+      return prev;
+    case HIRAGANA_VOICED_ITERATION_MARK:
+    case KATAKANA_VOICED_ITERATION_MARK:
+      return add_dakuten(prev);
+    default:
+      return 0;
+  }
+}
+
+std::u32string expand_iteration_marks(const std::u32string& text) {
+  std::u32string result;
+  for (size_t i = 0; i < text.size(); ++i) {
+    result += text[i];
+    if (i + 1 < text.size()) {
+      char32_t expanded = expand_mark(text[i], text[i + 1]);
+      if (expanded != 0) {
+        result += expanded;
+        ++i;
+      }
+    }
+  }
+  return result;
+}
+
 // TODO: implement rest of preprocessors
 std::vector<TextProcessor> get_japanese_processors() {
   return {
@@ -207,8 +255,12 @@ std::vector<TextProcessor> get_japanese_processors() {
        .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? alphanumeric_to_fullwidth(text) : text;
        }},
-      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? standardize_kanji(text) : text;
+       }},
+      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? expand_iteration_marks(text) : text;
        }}};
 }
 }
