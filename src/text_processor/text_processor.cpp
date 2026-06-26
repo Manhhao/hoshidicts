@@ -33,6 +33,8 @@ struct TextProcessor {
 constexpr uint32_t KATAKANA_SMALL_KA = 0x30f5;
 constexpr uint32_t KATAKANA_SMALL_KE = 0x30f6;
 constexpr uint32_t KANA_PROLONGED_SOUND_MARK = 0x30fc;
+constexpr uint32_t HIRAGANA_SMALL_TSU = 0x3063;
+constexpr uint32_t KATAKANA_SMALL_TSU = 0x30c3;
 
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_START = 0x3041;
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_END = 0x3096;
@@ -134,6 +136,48 @@ std::u32string katakana_to_hiragana(const std::u32string& text) {
     result += c;
   }
   return result;
+}
+
+bool is_emphatic(char32_t c) {
+  return c == HIRAGANA_SMALL_TSU || c == KATAKANA_SMALL_TSU || c == KANA_PROLONGED_SOUND_MARK;
+}
+
+// https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L776
+std::u32string collapse_emphatic_sequences(const std::u32string& text, bool full_collapse) {
+  ptrdiff_t left = 0;
+  while (left < static_cast<ptrdiff_t>(text.size()) && is_emphatic(text[left])) {
+    ++left;
+  }
+  ptrdiff_t right = static_cast<ptrdiff_t>(text.size()) - 1;
+  while (right >= 0 && is_emphatic(text[right])) {
+    --right;
+  }
+  if (left > right) {
+    return text;
+  }
+
+  std::u32string leading_emphatics = text.substr(0, left);
+  std::u32string trailing_emphatics = text.substr(right + 1);
+  std::u32string middle;
+  auto current_collapsed_code_point = static_cast<char32_t>(-1);
+
+  for (ptrdiff_t i = left; i <= right; ++i) {
+    char32_t c = text[i];
+    if (is_emphatic(c)) {
+      if (current_collapsed_code_point != c) {
+        current_collapsed_code_point = c;
+        if (!full_collapse) {
+          middle += c;
+          continue;
+        }
+      }
+    } else {
+      current_collapsed_code_point = static_cast<char32_t>(-1);
+      middle += c;
+    }
+  }
+
+  return leading_emphatics + middle + trailing_emphatics;
 }
 
 std::u32string nfkc(const std::u32string& text) {
@@ -258,6 +302,17 @@ std::vector<TextProcessor> get_japanese_processors() {
              return katakana_to_hiragana(text);
            case 2:
              return hiragana_to_katakana(text);
+           default:
+             return text;
+         }
+       }},
+      {.options = {0, 1, 2},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         switch (opt) {
+           case 1:
+             return collapse_emphatic_sequences(text, false);
+           case 2:
+             return collapse_emphatic_sequences(text, true);
            default:
              return text;
          }
