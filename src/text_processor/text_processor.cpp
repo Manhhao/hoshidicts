@@ -234,6 +234,19 @@ std::u32string expand_iteration_marks(const std::u32string& text) {
   return result;
 }
 
+constexpr std::u32string_view KANJI_NUMBERS = U"〇一二三四五六七八九";
+std::u32string numbers_to_kanji(const std::u32string& text) {
+  std::u32string result;
+  for (char32_t c : text) {
+    if (is_in_range(c, 0xff10, 0xff19)) {
+      result += KANJI_NUMBERS[c - 0xff10];
+    } else {
+      result += c;
+    }
+  }
+  return result;
+}
+
 // TODO: implement rest of preprocessors
 std::vector<TextProcessor> get_japanese_processors() {
   return {
@@ -259,8 +272,12 @@ std::vector<TextProcessor> get_japanese_processors() {
        .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? standardize_kanji(text) : text;
        }},
-      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? expand_iteration_marks(text) : text;
+       }},
+      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? numbers_to_kanji(text) : text;
        }}};
 }
 }
