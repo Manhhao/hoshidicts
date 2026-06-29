@@ -223,6 +223,8 @@ ProcessedFile process_term_bank(const std::string& content) {
     write_str(processed.data, term.rules);
     write_val<uint8_t>(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
+    write_val<uint32_t>(processed.data, 0);
+    write_val<int32_t>(processed.data, static_cast<int32_t>(term.score));
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     if (reading != expr) {
@@ -513,7 +515,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.media_count = media_thread.get();
 
-    std::ofstream sui(path + "/.hoshidicts_1", std::ios::binary);
+    std::ofstream sui(path + "/.hoshidicts_3", std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;

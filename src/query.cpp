@@ -3,6 +3,7 @@
 #include <ankerl/unordered_dense.h>
 #include <zstd.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -34,6 +35,7 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
 }
 
 struct DictionaryQuery::DictionaryData {
+  int version;
   hash::linear table;
   hash::bloom bloom;
   memory::mapped_file blobs;
@@ -64,7 +66,14 @@ DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
 void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
-  if (!std::filesystem::is_regular_file(path + "/.hoshidicts_1")) {
+  int version = 0;
+  if (std::filesystem::is_regular_file(path + "/.hoshidicts_3")) {
+    version = 3;
+  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_2")) {
+    version = 2;
+  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_1")) {
+    version = 1;
+  } else {
     return;
   }
 
@@ -82,6 +91,7 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   }
 
   dict.data = std::make_unique<DictionaryData>();
+  dict.data->version = version;
 
   dict.data->hash_table = memory::map_rd(path + "/hash.table");
   if (!dict.data->hash_table) {
@@ -178,6 +188,24 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
       auto term_tag_size = read_val<uint8_t>(blob_addr);
       std::string_view term_tags = read_str(blob_addr, term_tag_size);
 
+      if (data->version >= 2) {
+        auto redirect_count = read_val<uint32_t>(blob_addr);
+        for (uint32_t r = 0; r < redirect_count; r++) {
+          auto form_of_len = read_val<uint32_t>(blob_addr);
+          read_str(blob_addr, form_of_len);
+          auto rule_count = read_val<uint32_t>(blob_addr);
+          for (uint32_t j = 0; j < rule_count; j++) {
+            auto rule_len = read_val<uint32_t>(blob_addr);
+            read_str(blob_addr, rule_len);
+          }
+        }
+      }
+
+      int score = 0;
+      if (data->version >= 3) {
+        score = read_val<int32_t>(blob_addr);
+      }
+
       GlossaryEntry entry;
       entry.dict_name = name;
       entry.definition_tags = definition_tags;
@@ -190,6 +218,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
         it->second = {.expression = std::string(expr),
                       .reading = std::string(reading),
                       .rules = std::string(rules),
+                      .score = score,
                       .glossaries = {},
                       .frequencies = {}};
       } else {
@@ -199,6 +228,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
           }
           it->second.rules += rules;
         }
+        it->second.score = std::max(it->second.score, score);
       }
       it->second.glossaries.push_back(std::move(entry));
     }
