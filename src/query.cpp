@@ -3,6 +3,7 @@
 #include <ankerl/unordered_dense.h>
 #include <zstd.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -67,9 +68,14 @@ DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
 void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
-  const bool has_v2_format = std::filesystem::is_regular_file(path + "/.hoshidicts_2");
-  const bool has_v1_format = std::filesystem::is_regular_file(path + "/.hoshidicts_1");
-  if (!has_v2_format && !has_v1_format) {
+  uint8_t format_version = 0;
+  if (std::filesystem::is_regular_file(path + "/.hoshidicts_3")) {
+    format_version = 3;
+  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_2")) {
+    format_version = 2;
+  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_1")) {
+    format_version = 1;
+  } else {
     return;
   }
 
@@ -87,7 +93,7 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   }
 
   dict.data = std::make_unique<DictionaryData>();
-  dict.data->format_version = has_v2_format ? 2 : 1;
+  dict.data->format_version = format_version;
 
   dict.data->hash_table = memory::map_rd(path + "/hash.table");
   if (!dict.data->hash_table) {
@@ -220,9 +226,15 @@ std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& ex
         }
       }
 
+      int score = 0;
+      if (data->format_version >= 3) {
+        score = read_val<int32_t>(blob_addr);
+      }
+
       results.push_back({.expression = std::string(expr),
                          .reading = std::string(reading),
                          .rules = std::string(rules),
+                         .score = score,
                          .glossaries = {std::move(entry)},
                          .frequencies = {}});
     }
@@ -249,6 +261,7 @@ std::vector<TermResult> DictionaryQuery::merge_term_entries(std::vector<TermResu
     }
     it->second.glossaries.insert(it->second.glossaries.end(), std::make_move_iterator(term.glossaries.begin()),
                                  std::make_move_iterator(term.glossaries.end()));
+    it->second.score = std::max(it->second.score, term.score);
   }
 
   return term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();

@@ -2,6 +2,7 @@
 #include <utf8.h>
 #include <utf8proc.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <glaze/glaze.hpp>
@@ -26,12 +27,21 @@ namespace {
 constexpr uint32_t KATAKANA_SMALL_KA = 0x30f5;
 constexpr uint32_t KATAKANA_SMALL_KE = 0x30f6;
 constexpr uint32_t KANA_PROLONGED_SOUND_MARK = 0x30fc;
+constexpr uint32_t HIRAGANA_SMALL_TSU = 0x3063;
+constexpr uint32_t KATAKANA_SMALL_TSU = 0x30c3;
 
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_START = 0x3041;
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_END = 0x3096;
 
 constexpr uint32_t KATAKANA_CONVERSION_RANGE_START = 0x30a1;
 constexpr uint32_t KATAKANA_CONVERSION_RANGE_END = 0x30f6;
+
+constexpr char32_t KANJI_ITERATION_MARK = 0x3005;
+constexpr char32_t HIRAGANA_ITERATION_MARK = 0x309d;
+constexpr char32_t HIRAGANA_VOICED_ITERATION_MARK = 0x309e;
+constexpr char32_t KATAKANA_ITERATION_MARK = 0x30fd;
+constexpr char32_t KATAKANA_VOICED_ITERATION_MARK = 0x30fe;
+constexpr char32_t DAKUTEN = 0x3099;
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L121
 const std::unordered_map<char32_t, std::u32string> VOWEL_TO_KANA{
@@ -121,6 +131,48 @@ std::u32string katakana_to_hiragana(const std::u32string& text) {
   return result;
 }
 
+bool is_emphatic(char32_t c) {
+  return c == HIRAGANA_SMALL_TSU || c == KATAKANA_SMALL_TSU || c == KANA_PROLONGED_SOUND_MARK;
+}
+
+// https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L776
+std::u32string collapse_emphatic_sequences(const std::u32string& text, bool full_collapse) {
+  ptrdiff_t left = 0;
+  while (left < static_cast<ptrdiff_t>(text.size()) && is_emphatic(text[left])) {
+    ++left;
+  }
+  ptrdiff_t right = static_cast<ptrdiff_t>(text.size()) - 1;
+  while (right >= 0 && is_emphatic(text[right])) {
+    --right;
+  }
+  if (left > right) {
+    return text;
+  }
+
+  std::u32string leading_emphatics = text.substr(0, left);
+  std::u32string trailing_emphatics = text.substr(right + 1);
+  std::u32string middle;
+  auto current_collapsed_code_point = static_cast<char32_t>(-1);
+
+  for (ptrdiff_t i = left; i <= right; ++i) {
+    char32_t c = text[i];
+    if (is_emphatic(c)) {
+      if (current_collapsed_code_point != c) {
+        current_collapsed_code_point = c;
+        if (!full_collapse) {
+          middle += c;
+          continue;
+        }
+      }
+    } else {
+      current_collapsed_code_point = static_cast<char32_t>(-1);
+      middle += c;
+    }
+  }
+
+  return leading_emphatics + middle + trailing_emphatics;
+}
+
 std::u32string nfkc(const std::u32string& text) {
   std::string utf8 = utf8::utf32to8(text);
   utf8proc_uint8_t* out = utf8proc_NFKC(reinterpret_cast<const utf8proc_uint8_t*>(utf8.c_str()));
@@ -177,6 +229,60 @@ std::u32string standardize_kanji(const std::u32string& text) {
   return result;
 }
 
+char32_t add_dakuten(char32_t kana) {
+  std::u32string pair = {kana, DAKUTEN};
+  std::string utf8 = utf8::utf32to8(pair);
+  utf8proc_uint8_t* out = utf8proc_NFC(reinterpret_cast<const utf8proc_uint8_t*>(utf8.c_str()));
+  if (!out) {
+    return kana;
+  }
+  std::u32string composed = utf8::utf8to32(std::string(reinterpret_cast<char*>(out)));
+  utf8proc_free(out);
+  return composed.size() == 1 ? composed.front() : kana;
+}
+
+char32_t expand_mark(char32_t prev, char32_t mark) {
+  switch (mark) {
+    case KANJI_ITERATION_MARK:
+    case HIRAGANA_ITERATION_MARK:
+    case KATAKANA_ITERATION_MARK:
+      return prev;
+    case HIRAGANA_VOICED_ITERATION_MARK:
+    case KATAKANA_VOICED_ITERATION_MARK:
+      return add_dakuten(prev);
+    default:
+      return 0;
+  }
+}
+
+std::u32string expand_iteration_marks(const std::u32string& text) {
+  std::u32string result;
+  for (size_t i = 0; i < text.size(); ++i) {
+    result += text[i];
+    if (i + 1 < text.size()) {
+      char32_t expanded = expand_mark(text[i], text[i + 1]);
+      if (expanded != 0) {
+        result += expanded;
+        ++i;
+      }
+    }
+  }
+  return result;
+}
+
+constexpr std::u32string_view KANJI_NUMBERS = U"〇一二三四五六七八九";
+std::u32string numbers_to_kanji(const std::u32string& text) {
+  std::u32string result;
+  for (char32_t c : text) {
+    if (is_in_range(c, 0xff10, 0xff19)) {
+      result += KANJI_NUMBERS[c - 0xff10];
+    } else {
+      result += c;
+    }
+  }
+  return result;
+}
+
 std::string process_u32(const std::string& src, const std::function<std::u32string(const std::u32string&)>& process) {
   return utf8::utf32to8(process(utf8::utf8to32(src)));
 }
@@ -187,6 +293,17 @@ std::vector<language::internal::TextProcessorDefinition> get_japanese_processors
                  return std::vector<std::string>{text, process_u32(text, katakana_to_hiragana),
                                                  process_u32(text, hiragana_to_katakana)};
                }},
+          {.process =
+               [](const std::string& text) {
+                 return std::vector<std::string>{
+                     text,
+                     process_u32(text, [](const std::u32string& value) {
+                       return collapse_emphatic_sequences(value, false);
+                     }),
+                     process_u32(text, [](const std::u32string& value) {
+                       return collapse_emphatic_sequences(value, true);
+                     })};
+               }},
           {.process = [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, nfkc)}; }},
           {.process =
                [](const std::string& text) {
@@ -194,6 +311,12 @@ std::vector<language::internal::TextProcessorDefinition> get_japanese_processors
                }},
           {.process = [](const std::string& text) {
             return std::vector<std::string>{text, process_u32(text, standardize_kanji)};
+          }},
+          {.process = [](const std::string& text) {
+            return std::vector<std::string>{text, process_u32(text, expand_iteration_marks)};
+          }},
+          {.process = [](const std::string& text) {
+            return std::vector<std::string>{text, process_u32(text, numbers_to_kanji)};
           }}};
 }
 
