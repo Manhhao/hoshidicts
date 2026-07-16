@@ -472,6 +472,7 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   }
 
   for (auto& r : results) {
+    query_.order_glossaries(r.term.glossaries);
     query_.materialize(r.term);
   }
   std::erase_if(results, [](const LookupResult& result) { return result.term.glossaries.empty(); });

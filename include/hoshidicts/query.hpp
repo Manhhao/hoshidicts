@@ -96,6 +96,7 @@ class DictionaryQuery {
   std::vector<TermResult> query_raw(const std::string& expression) const;
   std::vector<TermResult> query_raw_entries(const std::string& expression) const;
   static std::vector<TermResult> merge_term_entries(std::vector<TermResult> terms);
+  void order_glossaries(std::vector<GlossaryEntry>& glossaries) const;
   void materialize(TermResult& term) const;
 
   struct DictionaryData;

@@ -267,6 +267,20 @@ std::vector<TermResult> DictionaryQuery::merge_term_entries(std::vector<TermResu
   return term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
 }
 
+void DictionaryQuery::order_glossaries(std::vector<GlossaryEntry>& glossaries) const {
+  std::unordered_map<std::string_view, size_t> dictionary_order;
+  dictionary_order.reserve(term_dicts_.size());
+  for (size_t i = 0; i < term_dicts_.size(); ++i) {
+    dictionary_order.try_emplace(term_dicts_[i].name, i);
+  }
+
+  const auto rank = [&](const GlossaryEntry& glossary) {
+    const auto it = dictionary_order.find(glossary.dict_name);
+    return it == dictionary_order.end() ? term_dicts_.size() : it->second;
+  };
+  std::ranges::stable_sort(glossaries, {}, rank);
+}
+
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [name, styles, data] : freq_dicts_) {
