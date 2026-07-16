@@ -69,13 +69,15 @@ Results are filtered by part-of-speech tags defined in dictionaries, or added di
 
 ## Acknowledgements
 
-- [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese deinflection rules and descriptions, Japanese preprocessor | GPLv3
+- [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese deinflection rules and descriptions, Japanese preprocessor | GPL-3.0
 - [glaze](https://github.com/stephenberry/glaze): MIT
 - [libdeflate](https://github.com/ebiggers/libdeflate.git): MIT
 - [xxHash](https://github.com/Cyan4973/xxHash): BSD-2-Clause
 - [zstd](https://github.com/facebook/zstd): BSD
 - [utfcpp](https://github.com/nemtrif/utfcpp): BSL-1.0
 - [unordered_dense](https://github.com/martinus/unordered_dense.git): MIT
+- [utf8proc](https://github.com/JuliaStrings/utf8proc): MIT
+- [kanji-processor](https://github.com/yomidevs/kanji-processor): MIT
 
 ## License
 hoshidicts (main) is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
