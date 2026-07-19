@@ -1,4 +1,5 @@
 #include "hoshidicts/query.hpp"
+#include "hoshidicts/importer.hpp"
 
 #include <ankerl/unordered_dense.h>
 #include <zstd.h>
@@ -78,14 +79,15 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   }
 
   Dictionary dict;
-  Index index;
+  Summary summary;
   std::string buf{};
-  if (glz::read_file_json(index, path + "/index.json", buf)) {
+  if (glz::read_file_json(summary, path + "/index.json", buf)) {
     return;
   }
 
-  dict.name = index.title.empty() ? std::filesystem::path(path).stem().string() : index.title;
-  if (std::filesystem::exists(path + "/styles.css")) {
+  dict.name = summary.title.empty() ? std::filesystem::path(path).stem().string() : summary.title;
+  dict.styles = summary.styles;
+  if (dict.styles.empty() && std::filesystem::exists(path + "/styles.css")) {
     std::ifstream f(path + "/styles.css");
     dict.styles = std::string(std::istreambuf_iterator<char>(f), {});
   }

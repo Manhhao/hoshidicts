@@ -1,17 +1,27 @@
 #pragma once
 #include <cstdint>
 #include <glaze/glaze.hpp>
-#include <cstdint>
+#include <optional>
 #include <string_view>
 #include <vector>
 
 struct Index {
   std::string_view title;
-  int format = 3;
+  std::optional<int> format;
+  std::optional<int> version;
   std::string_view revision;
-  bool isUpdatable;
-  std::string_view indexUrl;
-  std::string_view downloadUrl;
+  std::optional<std::string_view> minimumYomitanVersion;
+  bool sequenced = false;
+  std::optional<bool> isUpdatable;
+  std::optional<std::string_view> indexUrl;
+  std::optional<std::string_view> downloadUrl;
+  std::optional<std::string_view> author;
+  std::optional<std::string_view> url;
+  std::optional<std::string_view> description;
+  std::optional<std::string_view> attribution;
+  std::optional<std::string_view> sourceLanguage;
+  std::optional<std::string_view> targetLanguage;
+  std::optional<std::string_view> frequencyMode;
 };
 
 struct Term {
