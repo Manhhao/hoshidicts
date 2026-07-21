@@ -47,11 +47,6 @@ struct ImportResult {
   bool success = false;
   std::string title;
   Summary summary;
-  size_t term_count = 0;
-  size_t meta_count = 0;
-  size_t freq_count = 0;
-  size_t pitch_count = 0;
-  size_t media_count = 0;
   std::vector<std::string> errors;
 };
 

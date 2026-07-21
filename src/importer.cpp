@@ -43,8 +43,6 @@ struct ProcessedFile {
   std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
   SummaryMetaCount meta_counts;
   size_t count = 0;
-  size_t pitch_count = 0;
-  size_t freq_count = 0;
 };
 
 void setup_stream_exceptions(std::ofstream& stream) { stream.exceptions(std::ios::failbit | std::ios::badbit); }
@@ -273,11 +271,6 @@ ProcessedFile process_meta_bank(const std::string& content) {
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     processed.count++;
     processed.meta_counts[std::string(mode)]++;
-    if (mode == "freq") {
-      processed.freq_count++;
-    } else if (mode == "pitch" || mode == "ipa") {
-      processed.pitch_count++;
-    }
   }
 
   processed.meta_counts["total"] = processed.count;
@@ -365,6 +358,8 @@ Summary create_summary(const Index& index, std::string styles) {
   summary.targetLanguage = copy_optional_string(index.targetLanguage);
   summary.frequencyMode = copy_optional_string(index.frequencyMode);
   summary.importSuccess = true;
+  summary.counts.termMeta["total"] = 0;
+  summary.counts.kanjiMeta["total"] = 0;
   return summary;
 }
 
@@ -408,7 +403,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
     }
 
     write_offset += processed.data.size();
-    result.term_count += processed.count;
+    result.summary.counts.terms.total += processed.count;
   };
 
   for (int file_index : files) {
@@ -447,9 +442,6 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
     }
 
     write_offset += processed.data.size();
-    result.meta_count += processed.count;
-    result.freq_count += processed.freq_count;
-    result.pitch_count += processed.pitch_count;
     for (const auto& [mode, count] : processed.meta_counts) {
       result.summary.counts.termMeta[mode] += count;
     }
@@ -591,8 +583,6 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
     write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
     count_unprocessed_banks(zip, files, result);
-    result.summary.counts.terms.total = result.term_count;
-    result.summary.counts.termMeta["total"] = result.meta_count;
     if (offsets.empty()) {
       throw std::runtime_error("empty dictionary");
     }
@@ -611,8 +601,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
     hash_thread.get();
 
-    result.media_count = media_thread.get();
-    result.summary.counts.media.total = result.media_count;
+    result.summary.counts.media.total = media_thread.get();
 
     if (glz::write_file_json(result.summary, path + "/index.json", std::string{})) {
       throw std::runtime_error("failed to write index.json");

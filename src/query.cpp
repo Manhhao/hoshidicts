@@ -81,7 +81,7 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   Dictionary dict;
   Summary summary;
   std::string buf{};
-  if (glz::read_file_json(summary, path + "/index.json", buf)) {
+  if (glz::read_file_json<glz::opts{.error_on_unknown_keys = false}>(summary, path + "/index.json", buf)) {
     return;
   }
 
