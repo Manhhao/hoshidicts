@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -29,6 +30,8 @@ namespace {
 struct Files {
   std::vector<int> term_banks;
   std::vector<int> meta_banks;
+  std::vector<int> kanji_banks;
+  std::vector<int> kanji_meta_banks;
   std::vector<int> tag_banks;
   std::vector<int> media_files;
 };
@@ -38,9 +41,8 @@ struct ProcessedFile {
   std::vector<std::pair<uint64_t, uint64_t>> offsets;
   ankerl::unordered_dense::map<uint64_t, std::vector<char>> glossaries;
   std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
+  SummaryMetaCount meta_counts;
   size_t count = 0;
-  size_t pitch_count = 0;
-  size_t freq_count = 0;
 };
 
 void setup_stream_exceptions(std::ofstream& stream) { stream.exceptions(std::ios::failbit | std::ios::badbit); }
@@ -57,6 +59,10 @@ Files get_files(const Zip& zip) {
       files.term_banks.push_back(i);
     } else if (name.starts_with("term_meta_bank_")) {
       files.meta_banks.push_back(i);
+    } else if (name.starts_with("kanji_bank_")) {
+      files.kanji_banks.push_back(i);
+    } else if (name.starts_with("kanji_meta_bank_")) {
+      files.kanji_meta_banks.push_back(i);
     } else if (name.starts_with("tag_bank_")) {
       files.tag_banks.push_back(i);
     } else if (!(name == "styles.css" || name == "index.json")) {
@@ -264,14 +270,97 @@ ProcessedFile process_meta_bank(const std::string& content) {
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     processed.count++;
-    if (mode == "freq") {
-      processed.freq_count++;
-    } else if (mode == "pitch" || mode == "ipa") {
-      processed.pitch_count++;
+    processed.meta_counts[std::string(mode)]++;
+  }
+
+  processed.meta_counts["total"] = processed.count;
+  return processed;
+}
+
+size_t count_json_array(const std::string& content) {
+  if (content.empty()) {
+    return 0;
+  }
+
+  std::vector<glz::raw_json> entries;
+  if (glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(entries, content)) {
+    return 0;
+  }
+  return entries.size();
+}
+
+SummaryMetaCount count_meta_modes(const std::string& content) {
+  SummaryMetaCount counts{{"total", 0}};
+  if (content.empty()) {
+    return counts;
+  }
+
+  std::vector<Meta> entries;
+  if (!yomitan_parser::parse_meta_bank(content, entries)) {
+    return counts;
+  }
+
+  for (const auto& entry : entries) {
+    counts[std::string(entry.mode)]++;
+    counts["total"]++;
+  }
+  return counts;
+}
+
+void count_unprocessed_banks(const Zip& zip, const Files& files, ImportResult& result) {
+  for (int file_index : files.kanji_banks) {
+    result.summary.counts.kanji.total += count_json_array(zip.read(file_index));
+  }
+
+  for (int file_index : files.kanji_meta_banks) {
+    SummaryMetaCount modes = count_meta_modes(zip.read(file_index));
+    for (const auto& [name, count] : modes) {
+      result.summary.counts.kanjiMeta[name] += count;
     }
   }
 
-  return processed;
+  for (int file_index : files.tag_banks) {
+    result.summary.counts.tagMeta.total += count_json_array(zip.read(file_index));
+  }
+}
+
+template <typename T>
+std::optional<std::string> copy_optional_string(T value) {
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+  return std::string(*value);
+}
+
+uint64_t unix_time_ms() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+Summary create_summary(const Index& index, std::string styles) {
+  Summary summary;
+  summary.title = std::string(index.title);
+  summary.revision = std::string(index.revision);
+  summary.sequenced = index.sequenced;
+  summary.minimumYomitanVersion = copy_optional_string(index.minimumYomitanVersion);
+  summary.version = index.version.value_or(index.format.value_or(3));
+  summary.importDate = unix_time_ms();
+  summary.prefixWildcardsSupported = false;
+  summary.styles = std::move(styles);
+  summary.isUpdatable = index.isUpdatable;
+  summary.indexUrl = copy_optional_string(index.indexUrl);
+  summary.downloadUrl = copy_optional_string(index.downloadUrl);
+  summary.author = copy_optional_string(index.author);
+  summary.url = copy_optional_string(index.url);
+  summary.description = copy_optional_string(index.description);
+  summary.attribution = copy_optional_string(index.attribution);
+  summary.sourceLanguage = copy_optional_string(index.sourceLanguage);
+  summary.targetLanguage = copy_optional_string(index.targetLanguage);
+  summary.frequencyMode = copy_optional_string(index.frequencyMode);
+  summary.importSuccess = true;
+  summary.counts.termMeta["total"] = 0;
+  summary.counts.kanjiMeta["total"] = 0;
+  return summary;
 }
 
 void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
@@ -314,7 +403,7 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
     }
 
     write_offset += processed.data.size();
-    result.term_count += processed.count;
+    result.summary.counts.terms.total += processed.count;
   };
 
   for (int file_index : files) {
@@ -353,9 +442,9 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
     }
 
     write_offset += processed.data.size();
-    result.meta_count += processed.count;
-    result.freq_count += processed.freq_count;
-    result.pitch_count += processed.pitch_count;
+    for (const auto& [mode, count] : processed.meta_counts) {
+      result.summary.counts.termMeta[mode] += count;
+    }
   };
 
   for (int file_index : files) {
@@ -471,20 +560,13 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     std::string path = dict_path.string();
     std::filesystem::create_directories(dict_path);
 
-    if (glz::write_file_json(index, path + "/index.json", std::string{})) {
-      throw std::runtime_error("failed to write index.json");
-    }
-
+    std::string styles;
     int styles_idx = zip.find("styles.css");
     if (styles_idx >= 0) {
-      std::string styles = zip.read(styles_idx);
-      if (!styles.empty()) {
-        std::ofstream styles_file(path + "/styles.css", std::ios::binary);
-        setup_stream_exceptions(styles_file);
-        styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
-      }
+      styles = zip.read(styles_idx);
     }
 
+    result.summary = create_summary(index, styles);
     const Files files = get_files(zip);
     std::future<size_t> media_thread =
         std::async(std::launch::async, [&path, &zip, &files]() { return write_media(path, zip, files.media_files); });
@@ -495,6 +577,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     uint64_t write_offset = 0;
     write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
     write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
+    count_unprocessed_banks(zip, files, result);
     if (offsets.empty()) {
       throw std::runtime_error("empty dictionary");
     }
@@ -513,12 +596,19 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
     hash_thread.get();
 
-    result.media_count = media_thread.get();
+    result.summary.counts.media.total = media_thread.get();
+
+    if (glz::write_file_json(result.summary, path + "/index.json", std::string{})) {
+      throw std::runtime_error("failed to write index.json");
+    }
 
     std::ofstream sui(path + "/.hoshidicts_3", std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;
+    if (!result.summary.title.empty()) {
+      result.summary.importSuccess = false;
+    }
     result.errors.emplace_back(e.what());
   }
 

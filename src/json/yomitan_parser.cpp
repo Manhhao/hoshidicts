@@ -7,9 +7,13 @@ template <>
 struct glz::meta<Index> {
   using T = Index;
   static constexpr auto value =
-      object("title", glz::raw_string<&T::title>, "revision", glz::raw_string<&T::revision>, "format", &T::format,
-             "isUpdatable", &T::isUpdatable, "indexUrl", glz::raw_string<&T::indexUrl>, "downloadUrl",
-             glz::raw_string<&T::downloadUrl>);
+      object("title", glz::raw_string<&T::title>, "format", &T::format, "version", &T::version,
+             "revision", glz::raw_string<&T::revision>, "minimumYomitanVersion", glz::raw_string<&T::minimumYomitanVersion>,
+             "sequenced", &T::sequenced, "isUpdatable", &T::isUpdatable, "indexUrl", glz::raw_string<&T::indexUrl>,
+             "downloadUrl", glz::raw_string<&T::downloadUrl>, "author", glz::raw_string<&T::author>,
+             "url", glz::raw_string<&T::url>, "description", glz::raw_string<&T::description>,
+             "attribution", glz::raw_string<&T::attribution>, "sourceLanguage", glz::raw_string<&T::sourceLanguage>,
+             "targetLanguage", glz::raw_string<&T::targetLanguage>, "frequencyMode", glz::raw_string<&T::frequencyMode>);
 };
 
 template <>

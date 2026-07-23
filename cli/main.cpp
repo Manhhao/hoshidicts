@@ -32,11 +32,11 @@ void cmd_import(const std::string& path) {
 
   if (result.success) {
     std::cout << std::format("title: {}\n", result.title);
-    std::cout << std::format("term_count: {}\n", result.term_count);
-    std::cout << std::format("meta_count: {}\n", result.meta_count);
-    std::cout << std::format("freq_count: {}\n", result.freq_count);
-    std::cout << std::format("pitch_count: {}\n", result.pitch_count);
-    std::cout << std::format("media_count: {}\n", result.media_count);
+    std::cout << std::format("term_count: {}\n", result.summary.counts.terms.total);
+    std::cout << std::format("meta_count: {}\n", result.summary.counts.termMeta["total"]);
+    std::cout << std::format("freq_count: {}\n", result.summary.counts.termMeta["freq"]);
+    std::cout << std::format("pitch_count: {}\n", result.summary.counts.termMeta["pitch"] + result.summary.counts.termMeta["ipa"]);
+    std::cout << std::format("media_count: {}\n", result.summary.counts.media.total);
   } else {
     std::cout << std::format("could not import dictionary:\n");
     for (const auto& error : result.errors) {
