@@ -564,11 +564,6 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     int styles_idx = zip.find("styles.css");
     if (styles_idx >= 0) {
       styles = zip.read(styles_idx);
-      if (!styles.empty()) {
-        std::ofstream styles_file(path + "/styles.css", std::ios::binary);
-        setup_stream_exceptions(styles_file);
-        styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
-      }
     }
 
     result.summary = create_summary(index, styles);
