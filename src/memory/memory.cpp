@@ -118,8 +118,10 @@ void unmap(mapped_file mapping) {
   }
 
 #ifdef _WIN32
+  FlushViewOfFile(mapping.data, 0);
   UnmapViewOfFile(mapping.data);
 #else
+  msync(mapping.data, mapping.size, MS_SYNC);
   munmap(mapping.data, mapping.size);
 #endif
 }
