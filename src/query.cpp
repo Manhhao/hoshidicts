@@ -97,14 +97,17 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   if (!dict.data->hash_table) {
     return;
   }
-  dict.data->table.load(dict.data->hash_table.data);
+  if (!dict.data->table.load(dict.data->hash_table.data, dict.data->hash_table.size)) {
+    return;
+  }
 
   dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
   if (!dict.data->bloom_filter) {
-    hash::bloom::build_to_file(dict.data->table.populated(), path + "/bloom.filter");
-    dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
+    return;
   }
-  dict.data->bloom.load(dict.data->bloom_filter.data);
+  if (!dict.data->bloom.load(dict.data->bloom_filter.data, dict.data->bloom_filter.size)) {
+    return;
+  }
   dict.data->table.set_bloom(&dict.data->bloom);
 
   dict.data->blobs = memory::map_rd(path + "/blobs.bin");

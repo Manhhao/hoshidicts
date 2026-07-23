@@ -13,11 +13,15 @@ namespace {
 constexpr uint64_t num_hashes = 7;
 }
 
-void bloom::load(const uint8_t* ptr) {
+bool bloom::load(const uint8_t* ptr, size_t size) {
   uint64_t num_bits = *reinterpret_cast<const uint64_t*>(ptr);
+  if (size != 2 * sizeof(uint64_t) + num_bits / 8) {
+    return false;
+  }
   num_hashes_ = *reinterpret_cast<const uint64_t*>(ptr + sizeof(uint64_t));
   mask_ = num_bits - 1;
   bits_ = reinterpret_cast<const uint64_t*>(ptr + 2 * sizeof(uint64_t));
+  return true;
 }
 
 void bloom::build_to_file(const std::vector<uint64_t>& hashes, const std::string& path) {

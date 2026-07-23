@@ -60,22 +60,13 @@ void linear::build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& has
   ptr_->capacity = 0;
 }
 
-std::vector<uint64_t> linear::populated() const {
-  std::vector<uint64_t> result;
-  if (!ptr_->table) {
-    return result;
+bool linear::load(uint8_t* ptr, size_t size) {
+  uint32_t capacity = *reinterpret_cast<uint32_t*>(ptr);
+  if (size != sizeof(uint32_t) + static_cast<size_t>(capacity) * sizeof(slot)) {
+    return false;
   }
-  result.reserve(static_cast<size_t>(ptr_->capacity) * 7 / 10);
-  for (uint32_t i = 0; i < ptr_->capacity; i++) {
-    if (ptr_->table[i].hash != 0) {
-      result.push_back(ptr_->table[i].hash);
-    }
-  }
-  return result;
-}
-
-void linear::load(uint8_t* ptr) {
-  ptr_->capacity = *reinterpret_cast<uint32_t*>(ptr);
+  ptr_->capacity = capacity;
   ptr_->table = reinterpret_cast<slot*>(ptr + sizeof(uint32_t));
+  return true;
 }
 }
