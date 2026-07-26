@@ -132,6 +132,9 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
     case PITCH:
       pitch_dicts_.push_back(std::move(dict));
       break;
+    case KANJI:
+      kanji_dicts_.push_back(std::move(dict));
+      break;
   }
 }
 
@@ -141,6 +144,10 @@ void DictionaryQuery::add_freq_dict(const std::string& path) { add_dict(path, Di
 
 void DictionaryQuery::add_pitch_dict(const std::string& path) {
   add_dict(path, DictionaryQuery::DictionaryType::PITCH);
+}
+
+void DictionaryQuery::add_kanji_dict(const std::string& path) {
+  add_dict(path, DictionaryQuery::DictionaryType::KANJI);
 }
 
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
@@ -359,6 +366,71 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
       }
     }
   }
+}
+
+KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
+  KanjiResult result;
+  result.character = kanji;
+
+  for (const auto& [name, styles, data] : kanji_dicts_) {
+    uint64_t offset_addr = data->table(kanji);
+    if (offset_addr == 0) {
+      continue;
+    }
+    const uint8_t* index_addr = data->blobs.data + offset_addr;
+    auto count = read_val<uint32_t>(index_addr);
+
+    for (uint32_t i = 0; i < count; i++) {
+      auto offset = read_val<uint64_t>(index_addr);
+      const uint8_t* blob_addr = data->blobs.data + offset;
+
+      auto type = read_val<uint8_t>(blob_addr);
+      if (type != 2) {
+        continue;
+      }
+
+      auto char_len = read_val<uint8_t>(blob_addr);
+      std::string_view char_sv = read_str(blob_addr, char_len);
+      if (char_sv != kanji) {
+        continue;
+      }
+
+      auto onyomi_len = read_val<uint16_t>(blob_addr);
+      std::string_view onyomi = read_str(blob_addr, onyomi_len);
+
+      auto kunyomi_len = read_val<uint16_t>(blob_addr);
+      std::string_view kunyomi = read_str(blob_addr, kunyomi_len);
+
+      auto tags_len = read_val<uint16_t>(blob_addr);
+      std::string_view tags = read_str(blob_addr, tags_len);
+
+      KanjiEntry entry;
+      entry.dict_name = name;
+      entry.onyomi = onyomi;
+      entry.kunyomi = kunyomi;
+      entry.tags = tags;
+
+      auto def_count = read_val<uint16_t>(blob_addr);
+      for (uint16_t j = 0; j < def_count; j++) {
+        auto def_len = read_val<uint16_t>(blob_addr);
+        std::string_view def = read_str(blob_addr, def_len);
+        entry.definitions.emplace_back(def);
+      }
+
+      auto stat_count = read_val<uint16_t>(blob_addr);
+      for (uint16_t j = 0; j < stat_count; j++) {
+        auto key_len = read_val<uint16_t>(blob_addr);
+        std::string_view key = read_str(blob_addr, key_len);
+        auto val_len = read_val<uint16_t>(blob_addr);
+        std::string_view val = read_str(blob_addr, val_len);
+        entry.stats.emplace(key, val);
+      }
+
+      result.entries.push_back(std::move(entry));
+    }
+  }
+
+  return result;
 }
 
 std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) {

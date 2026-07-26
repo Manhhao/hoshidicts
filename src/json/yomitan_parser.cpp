@@ -31,6 +31,13 @@ struct glz::meta<Meta> {
 };
 
 template <>
+struct glz::meta<Kanji> {
+  using T = Kanji;
+  static constexpr auto value = array(glz::raw_string<&T::character>, glz::raw_string<&T::onyomi>,
+                                      glz::raw_string<&T::kunyomi>, glz::raw_string<&T::tags>, &T::definitions, &T::stats);
+};
+
+template <>
 struct glz::meta<Tag> {
   using T = Tag;
   static constexpr auto value =
@@ -126,6 +133,11 @@ bool yomitan_parser::parse_term_bank(std::string_view content, std::vector<Term>
 }
 
 bool yomitan_parser::parse_meta_bank(std::string_view content, std::vector<Meta>& out) {
+  auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
+  return !error;
+}
+
+bool yomitan_parser::parse_kanji_bank(std::string_view content, std::vector<Kanji>& out) {
   auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
   return !error;
 }

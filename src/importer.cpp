@@ -277,6 +277,55 @@ ProcessedFile process_meta_bank(const std::string& content) {
   return processed;
 }
 
+ProcessedFile process_kanji_bank(const std::string& content) {
+  ProcessedFile processed;
+  if (content.empty()) {
+    return processed;
+  }
+
+  std::vector<Kanji> out;
+  if (!yomitan_parser::parse_kanji_bank(content, out)) {
+    return processed;
+  }
+
+  for (auto& kanji : out) {
+    uint64_t offset = processed.data.size();
+    std::string_view character = kanji.character;
+    std::string_view onyomi = kanji.onyomi;
+    std::string_view kunyomi = kanji.kunyomi;
+    std::string_view tags = kanji.tags;
+
+    write_val<uint8_t>(processed.data, 2);
+    write_val<uint8_t>(processed.data, character.size());
+    write_str(processed.data, character);
+    write_val<uint16_t>(processed.data, onyomi.size());
+    write_str(processed.data, onyomi);
+    write_val<uint16_t>(processed.data, kunyomi.size());
+    write_str(processed.data, kunyomi);
+    write_val<uint16_t>(processed.data, tags.size());
+    write_str(processed.data, tags);
+
+    write_val<uint16_t>(processed.data, kanji.definitions.size());
+    for (auto& def : kanji.definitions) {
+      write_val<uint16_t>(processed.data, def.size());
+      write_str(processed.data, def);
+    }
+
+    write_val<uint16_t>(processed.data, kanji.stats.size());
+    for (auto& [k, v] : kanji.stats) {
+      write_val<uint16_t>(processed.data, k.size());
+      write_str(processed.data, k);
+      write_val<uint16_t>(processed.data, v.size());
+      write_str(processed.data, v);
+    }
+
+    processed.offsets.emplace_back(XXH3_64bits(character.data(), character.size()), offset);
+    processed.count++;
+  }
+
+  return processed;
+}
+
 size_t count_json_array(const std::string& content) {
   if (content.empty()) {
     return 0;
@@ -308,10 +357,6 @@ SummaryMetaCount count_meta_modes(const std::string& content) {
 }
 
 void count_unprocessed_banks(const Zip& zip, const Files& files, ImportResult& result) {
-  for (int file_index : files.kanji_banks) {
-    result.summary.counts.kanji.total += count_json_array(zip.read(file_index));
-  }
-
   for (int file_index : files.kanji_meta_banks) {
     SummaryMetaCount modes = count_meta_modes(zip.read(file_index));
     for (const auto& [name, count] : modes) {
@@ -463,6 +508,45 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
   }
 }
 
+void write_kanji(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
+                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
+  if (files.empty()) {
+    return;
+  }
+
+  size_t max_threads =
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()) + 4);
+  std::deque<std::future<ProcessedFile>> threads;
+  auto write_processed = [&](ProcessedFile&& processed) {
+    if (processed.data.empty()) {
+      return;
+    }
+    file.write(processed.data.data(), static_cast<std::streamsize>(processed.data.size()));
+
+    for (auto& [hash, offset] : processed.offsets) {
+      offsets.emplace_back(hash, offset + write_offset);
+    }
+
+    write_offset += processed.data.size();
+    result.summary.counts.kanji.total += processed.count;
+  };
+
+  for (int file_index : files) {
+    threads.push_back(
+        std::async(std::launch::async, [&zip, file_index]() { return process_kanji_bank(zip.read(file_index)); }));
+
+    if (threads.size() == max_threads) {
+      write_processed(threads.front().get());
+      threads.pop_front();
+    }
+  }
+
+  while (!threads.empty()) {
+    write_processed(threads.front().get());
+    threads.pop_front();
+  }
+}
+
 std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
                                      std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
   std::vector<char> offset_buf;
@@ -577,6 +661,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     uint64_t write_offset = 0;
     write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
     write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
+    write_kanji(blobs, offsets, zip, files.kanji_banks, write_offset, result, low_ram);
     count_unprocessed_banks(zip, files, result);
     if (offsets.empty()) {
       throw std::runtime_error("empty dictionary");
