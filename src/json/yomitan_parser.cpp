@@ -47,7 +47,7 @@ struct glz::meta<Tag> {
 namespace internal {
 struct FrequencyValue {
   int value;
-  std::string display_value;
+  std::optional<std::string> display_value;
 };
 
 struct RawFrequencyFlat {
@@ -170,7 +170,7 @@ bool yomitan_parser::parse_frequency(std::string_view content, ParsedFrequency& 
   }
 
   internal::RawFrequency parsed;
-  error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(parsed, content);
+  error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = true}>(parsed, content);
   if (error) {
     return false;
   }
@@ -183,7 +183,7 @@ bool yomitan_parser::parse_frequency(std::string_view content, ParsedFrequency& 
   } else {
     auto& freq = std::get<internal::FrequencyValue>(parsed.frequency);
     out.value = freq.value;
-    out.display_value = freq.display_value.empty() ? std::to_string(freq.value) : freq.display_value;
+    out.display_value = freq.display_value.value_or(std::to_string(freq.value));
   }
   return true;
 }
