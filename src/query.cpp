@@ -314,7 +314,7 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
       const uint8_t* index_addr = data->blobs.data + offset_addr;
       auto count = read_val<uint32_t>(index_addr);
 
-      std::vector<int> pitch_positions;
+      std::vector<Pitch> pitches;
       std::vector<std::string> transcriptions;
       for (uint32_t i = 0; i < count; i++) {
         auto offset = read_val<uint64_t>(index_addr);
@@ -342,7 +342,12 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
             if (!parsed.reading.empty() && parsed.reading != term.reading) {
               continue;
             }
-            pitch_positions.insert(pitch_positions.end(), parsed.pitches.begin(), parsed.pitches.end());
+            for (auto& accent : parsed.pitches) {
+              pitches.emplace_back(Pitch{.position = accent.position,
+                                         .pattern = std::move(accent.pattern),
+                                         .nasal = std::move(accent.nasal),
+                                         .devoice = std::move(accent.devoice)});
+            }
           }
         } else if (mode == "ipa") {
           auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
@@ -357,10 +362,10 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
           }
         }
       }
-      if (!pitch_positions.empty() || !transcriptions.empty()) {
+      if (!pitches.empty() || !transcriptions.empty()) {
         term.pitches.emplace_back(PitchEntry{
             .dict_name = name,
-            .pitch_positions = std::move(pitch_positions),
+            .pitches = std::move(pitches),
             .transcriptions = std::move(transcriptions),
         });
       }

@@ -64,9 +64,16 @@ struct ParsedFrequency {
   std::string display_value;
 };
 
+struct ParsedAccent {
+  int position = 0;
+  std::string pattern;
+  std::vector<int> nasal;
+  std::vector<int> devoice;
+};
+
 struct ParsedPitch {
   std::string_view reading;
-  std::vector<int> pitches;
+  std::vector<ParsedAccent> pitches;
   std::vector<std::string_view> transcriptions;
 };
 

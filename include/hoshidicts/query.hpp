@@ -41,9 +41,16 @@ struct FrequencyEntry {
   std::vector<Frequency> frequencies;
 };
 
+struct Pitch {
+  int position = 0;
+  std::string pattern;
+  std::vector<int> nasal;
+  std::vector<int> devoice;
+};
+
 struct PitchEntry {
   std::string dict_name;
-  std::vector<int> pitch_positions;
+  std::vector<Pitch> pitches;
   std::vector<std::string> transcriptions;
 };
 
