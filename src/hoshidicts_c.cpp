@@ -5,6 +5,7 @@
 
 #include "hoshidicts/deinflector.hpp"
 #include "hoshidicts/importer.hpp"
+#include "hoshidicts/lookup.hpp"
 #include "hoshidicts/query.hpp"
 
 // importer
@@ -138,6 +139,69 @@ int hd_query_add_kanji_dict(hd_query* q, const char* path) {
   }
 }
 
+static void build_glossaries(std::vector<hd_glossary_entry>& entries, const TermResult& term_result,
+                             hd_term_result& tr) {
+  size_t glossaries_start = entries.size();
+  for (const auto& gloss_entry : term_result.glossaries) {
+    hd_glossary_entry gls;
+    gls.dict_name = hd_str{gloss_entry.dict_name.c_str(), gloss_entry.dict_name.size()};
+    gls.glossary = hd_str{gloss_entry.glossary.c_str(), gloss_entry.glossary.size()};
+    gls.definition_tags = hd_str{gloss_entry.definition_tags.c_str(), gloss_entry.definition_tags.size()};
+    gls.term_tags = hd_str{gloss_entry.term_tags.c_str(), gloss_entry.term_tags.size()};
+    entries.push_back(gls);
+  }
+  tr.glossaries = entries.data() + glossaries_start;
+  tr.glossaries_count = term_result.glossaries.size();
+}
+
+static void build_frequencies(std::vector<hd_frequency_entry>& entries, std::vector<hd_frequency>& frequencies,
+                              const TermResult& term_result, hd_term_result& tr) {
+  size_t frequency_entry_start = entries.size();
+  for (const auto& freq_entry : term_result.frequencies) {
+    hd_frequency_entry frq;
+    frq.dict_name = hd_str{freq_entry.dict_name.c_str(), freq_entry.dict_name.size()};
+
+    size_t frequencies_start = frequencies.size();
+    for (const auto& freq : freq_entry.frequencies) {
+      frequencies.push_back(hd_frequency{freq.value, hd_str{freq.display_value.c_str(), freq.display_value.size()}});
+    }
+    frq.frequencies = frequencies.data() + frequencies_start;
+    frq.frequencies_count = freq_entry.frequencies.size();
+
+    entries.push_back(frq);
+  }
+  tr.frequencies = entries.data() + frequency_entry_start;
+  tr.frequencies_count = term_result.frequencies.size();
+}
+
+static void build_pitches(std::vector<hd_pitch_entry>& entries, std::vector<hd_pitch>& pitches,
+                          std::vector<hd_str>& transcriptions, const TermResult& term_result, hd_term_result& tr) {
+  size_t pitch_entry_start = entries.size();
+  for (const auto& pitch_entry : term_result.pitches) {
+    hd_pitch_entry p;
+    p.dict_name = hd_str{pitch_entry.dict_name.c_str(), pitch_entry.dict_name.size()};
+
+    size_t pitches_start = pitches.size();
+    for (const auto& pitch : pitch_entry.pitches) {
+      pitches.push_back(hd_pitch{pitch.position, hd_str{pitch.pattern.c_str(), pitch.pattern.size()},
+                                 pitch.nasal.data(), pitch.nasal.size(), pitch.devoice.data(), pitch.devoice.size()});
+    }
+    p.pitches = pitches.data() + pitches_start;
+    p.pitches_count = pitch_entry.pitches.size();
+
+    size_t transcription_start = transcriptions.size();
+    for (const auto& transcription : pitch_entry.transcriptions) {
+      transcriptions.push_back(hd_str{transcription.c_str(), transcription.size()});
+    }
+    p.transcriptions = transcriptions.data() + transcription_start;
+    p.transcriptions_count = pitch_entry.transcriptions.size();
+
+    entries.push_back(p);
+  }
+  tr.pitches = entries.data() + pitch_entry_start;
+  tr.pitches_count = term_result.pitches.size();
+}
+
 hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_term_result** out_terms,
                          size_t* out_count) {
   try {
@@ -176,61 +240,9 @@ hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_ter
       tr.rules = hd_str{term_result.rules.c_str(), term_result.rules.size()};
       tr.score = term_result.score;
 
-      size_t glossaries_start = r->glossary_entries.size();
-      for (const auto& gloss_entry : term_result.glossaries) {
-        hd_glossary_entry gls;
-        gls.dict_name = hd_str{gloss_entry.dict_name.c_str(), gloss_entry.dict_name.size()};
-        gls.glossary = hd_str{gloss_entry.glossary.c_str(), gloss_entry.glossary.size()};
-        gls.definition_tags = hd_str{gloss_entry.definition_tags.c_str(), gloss_entry.definition_tags.size()};
-        gls.term_tags = hd_str{gloss_entry.term_tags.c_str(), gloss_entry.term_tags.size()};
-        r->glossary_entries.push_back(gls);
-      }
-      tr.glossaries = r->glossary_entries.data() + glossaries_start;
-      tr.glossaries_count = term_result.glossaries.size();
-
-      size_t frequency_entry_start = r->frequency_entries.size();
-      for (const auto& freq_entry : term_result.frequencies) {
-        hd_frequency_entry frq;
-        frq.dict_name = hd_str{freq_entry.dict_name.c_str(), freq_entry.dict_name.size()};
-
-        size_t frequencies_start = r->frequencies.size();
-        for (const auto& freq : freq_entry.frequencies) {
-          r->frequencies.push_back(
-              hd_frequency{freq.value, hd_str{freq.display_value.c_str(), freq.display_value.size()}});
-        }
-        frq.frequencies = r->frequencies.data() + frequencies_start;
-        frq.frequencies_count = freq_entry.frequencies.size();
-
-        r->frequency_entries.push_back(frq);
-      }
-      tr.frequencies = r->frequency_entries.data() + frequency_entry_start;
-      tr.frequencies_count = term_result.frequencies.size();
-
-      size_t pitch_entry_start = r->pitch_entries.size();
-      for (const auto& pitch_entry : term_result.pitches) {
-        hd_pitch_entry p;
-        p.dict_name = hd_str{pitch_entry.dict_name.c_str(), pitch_entry.dict_name.size()};
-
-        size_t pitches_start = r->pitches.size();
-        for (const auto& pitch : pitch_entry.pitches) {
-          r->pitches.push_back(hd_pitch{pitch.position, hd_str{pitch.pattern.c_str(), pitch.pattern.size()},
-                                        pitch.nasal.data(), pitch.nasal.size(), pitch.devoice.data(),
-                                        pitch.devoice.size()});
-        }
-        p.pitches = r->pitches.data() + pitches_start;
-        p.pitches_count = pitch_entry.pitches.size();
-
-        size_t transcription_start = r->transcriptions.size();
-        for (const auto& transcription : pitch_entry.transcriptions) {
-          r->transcriptions.push_back(hd_str{transcription.c_str(), transcription.size()});
-        }
-        p.transcriptions = r->transcriptions.data() + transcription_start;
-        p.transcriptions_count = pitch_entry.transcriptions.size();
-
-        r->pitch_entries.push_back(p);
-      }
-      tr.pitches = r->pitch_entries.data() + pitch_entry_start;
-      tr.pitches_count = term_result.pitches.size();
+      build_glossaries(r->glossary_entries, term_result, tr);
+      build_frequencies(r->frequency_entries, r->frequencies, term_result, tr);
+      build_pitches(r->pitch_entries, r->pitches, r->transcriptions, term_result, tr);
 
       r->term_results.push_back(tr);
     }
@@ -323,3 +335,101 @@ hd_styles* hd_query_get_styles(const hd_query* q, const hd_dictionary_style** ou
 }
 
 void hd_styles_free(hd_styles* s) { delete s; }
+
+// lookup
+struct hd_lookup {
+  Lookup lookup;
+};
+
+struct hd_lookup_results {
+  std::vector<LookupResult> res;
+  std::vector<hd_lookup_result> results;
+  std::vector<hd_transform_group> trace;
+  std::vector<hd_glossary_entry> glossary_entries;
+  std::vector<hd_frequency_entry> frequency_entries;
+  std::vector<hd_pitch_entry> pitch_entries;
+  std::vector<hd_frequency> frequencies;
+  std::vector<hd_pitch> pitches;
+  std::vector<hd_str> transcriptions;
+};
+
+hd_lookup* hd_lookup_new(hd_query* q, hd_deinflector* d) {
+  try {
+    return new hd_lookup{Lookup(q->query, d->deinflector)};
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void hd_lookup_free(hd_lookup* l) { delete l; }
+
+hd_lookup_results* hd_lookup_run(const hd_lookup* l, const char* lookup_string, int max_results, size_t scan_length,
+                                 const hd_lookup_result** out_results, size_t* out_count) {
+  try {
+    auto r = std::make_unique<hd_lookup_results>();
+    r->res = l->lookup.lookup(lookup_string, max_results, scan_length);
+
+    size_t trace_count = 0;
+    size_t glossaries_count = 0;
+    size_t freq_entry_count = 0;
+    size_t freq_count = 0;
+    size_t pitch_entry_count = 0;
+    size_t pitch_count = 0;
+    size_t transcription_count = 0;
+    for (const auto& lookup_result : r->res) {
+      trace_count += lookup_result.trace.size();
+      glossaries_count += lookup_result.term.glossaries.size();
+      freq_entry_count += lookup_result.term.frequencies.size();
+      pitch_entry_count += lookup_result.term.pitches.size();
+      for (const auto& freq_entry : lookup_result.term.frequencies) {
+        freq_count += freq_entry.frequencies.size();
+      }
+      for (const auto& pitch_entry : lookup_result.term.pitches) {
+        pitch_count += pitch_entry.pitches.size();
+        transcription_count += pitch_entry.transcriptions.size();
+      }
+    }
+    r->trace.reserve(trace_count);
+    r->glossary_entries.reserve(glossaries_count);
+    r->frequency_entries.reserve(freq_entry_count);
+    r->frequencies.reserve(freq_count);
+    r->pitch_entries.reserve(pitch_entry_count);
+    r->pitches.reserve(pitch_count);
+    r->transcriptions.reserve(transcription_count);
+
+    for (const auto& lookup_result : r->res) {
+      const auto& term_result = lookup_result.term;
+      hd_lookup_result lr;
+      lr.matched = hd_str{lookup_result.matched.c_str(), lookup_result.matched.size()};
+      lr.deinflected = hd_str{lookup_result.deinflected.c_str(), lookup_result.deinflected.size()};
+      lr.preprocessor_steps = lookup_result.preprocessor_steps;
+
+      size_t trace_start = r->trace.size();
+      for (const auto& group : lookup_result.trace) {
+        r->trace.push_back(hd_transform_group{hd_str{group.name.c_str(), group.name.size()},
+                                              hd_str{group.description.c_str(), group.description.size()}});
+      }
+      lr.trace = r->trace.data() + trace_start;
+      lr.trace_count = lookup_result.trace.size();
+
+      lr.term.expression = hd_str{term_result.expression.c_str(), term_result.expression.size()};
+      lr.term.reading = hd_str{term_result.reading.c_str(), term_result.reading.size()};
+      lr.term.rules = hd_str{term_result.rules.c_str(), term_result.rules.size()};
+      lr.term.score = term_result.score;
+
+      build_glossaries(r->glossary_entries, term_result, lr.term);
+      build_frequencies(r->frequency_entries, r->frequencies, term_result, lr.term);
+      build_pitches(r->pitch_entries, r->pitches, r->transcriptions, term_result, lr.term);
+
+      r->results.push_back(lr);
+    }
+
+    *out_results = r->results.data();
+    *out_count = r->results.size();
+    return r.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void hd_lookup_results_free(hd_lookup_results* r) { delete r; }

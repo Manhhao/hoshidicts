@@ -136,6 +136,31 @@ hd_media_file hd_query_get_media_file(const hd_query* q, const char* dict_name, 
 hd_styles* hd_query_get_styles(const hd_query* q, const hd_dictionary_style** out_styles, size_t* out_count);
 void hd_styles_free(hd_styles* s);
 
+// lookup
+typedef struct hd_lookup hd_lookup;
+typedef struct hd_lookup_results hd_lookup_results;
+
+typedef struct hd_transform_group {
+  hd_str name;
+  hd_str description;
+} hd_transform_group;
+
+typedef struct hd_lookup_result {
+  hd_str matched;
+  hd_str deinflected;
+  const hd_transform_group* trace;
+  size_t trace_count;
+  hd_term_result term;
+  int32_t preprocessor_steps;
+} hd_lookup_result;
+
+hd_lookup* hd_lookup_new(hd_query* q, hd_deinflector* d);
+void hd_lookup_free(hd_lookup* l);
+
+hd_lookup_results* hd_lookup_run(const hd_lookup* l, const char* lookup_string, int max_results, size_t scan_length,
+                                 const hd_lookup_result** out_results, size_t* out_count);
+void hd_lookup_results_free(hd_lookup_results* r);
+
 #ifdef __cplusplus
 }
 #endif
