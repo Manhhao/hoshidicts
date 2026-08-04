@@ -38,6 +38,7 @@ void hd_deinflector_free(hd_deinflector* d);
 // query
 typedef struct hd_query hd_query;
 typedef struct hd_results hd_results;
+typedef struct hd_styles hd_styles;
 
 typedef struct hd_frequency {
   int32_t value;
@@ -88,6 +89,7 @@ typedef struct hd_term_result {
   hd_str expression;
   hd_str reading;
   hd_str rules;
+  int32_t score;
   const hd_glossary_entry* glossaries;
   size_t glossaries_count;
   const hd_frequency_entry* frequencies;
@@ -106,6 +108,11 @@ int hd_query_add_pitch_dict(hd_query* q, const char* path);
 hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_term_result** out_terms,
                          size_t* out_count);
 void hd_results_free(hd_results* r);
+
+hd_media_file hd_query_get_media_file(const hd_query* q, const char* dict_name, const char* media_path);
+
+hd_styles* hd_query_get_styles(const hd_query* q, const hd_dictionary_style** out_styles, size_t* out_count);
+void hd_styles_free(hd_styles* s);
 
 #ifdef __cplusplus
 }

@@ -33,9 +33,13 @@ static uint64_t meta_count(const SummaryMetaCount& counts, const std::string& mo
 
 uint64_t hd_import_result_term_count(const hd_import_result* r) { return r->result.summary.counts.terms.total; }
 
-uint64_t hd_import_result_meta_count(const hd_import_result* r) { return meta_count(r->result.summary.counts.termMeta, "total"); }
+uint64_t hd_import_result_meta_count(const hd_import_result* r) {
+  return meta_count(r->result.summary.counts.termMeta, "total");
+}
 
-uint64_t hd_import_result_freq_count(const hd_import_result* r) { return meta_count(r->result.summary.counts.termMeta, "freq"); }
+uint64_t hd_import_result_freq_count(const hd_import_result* r) {
+  return meta_count(r->result.summary.counts.termMeta, "freq");
+}
 
 uint64_t hd_import_result_pitch_count(const hd_import_result* r) {
   return meta_count(r->result.summary.counts.termMeta, "pitch") + meta_count(r->result.summary.counts.termMeta, "ipa");
@@ -74,6 +78,11 @@ struct hd_results {
   std::vector<hd_frequency> frequencies;
   std::vector<hd_pitch> pitches;
   std::vector<hd_str> transcriptions;
+};
+
+struct hd_styles {
+  std::vector<DictionaryStyle> res;
+  std::vector<hd_dictionary_style> styles;
 };
 
 hd_query* hd_query_new(void) {
@@ -149,6 +158,7 @@ hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_ter
       tr.expression = hd_str{term_result.expression.c_str(), term_result.expression.size()};
       tr.reading = hd_str{term_result.reading.c_str(), term_result.reading.size()};
       tr.rules = hd_str{term_result.rules.c_str(), term_result.rules.size()};
+      tr.score = term_result.score;
 
       size_t glossaries_start = r->glossary_entries.size();
       for (const auto& gloss_entry : term_result.glossaries) {
@@ -218,3 +228,33 @@ hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_ter
 }
 
 void hd_results_free(hd_results* r) { delete r; }
+
+hd_media_file hd_query_get_media_file(const hd_query* q, const char* dict_name, const char* media_path) {
+  try {
+    auto view = q->query.get_media_file_view(dict_name, media_path);
+    return hd_media_file{reinterpret_cast<const uint8_t*>(view.data), view.size};
+  } catch (...) {
+    return hd_media_file{nullptr, 0};
+  }
+}
+
+hd_styles* hd_query_get_styles(const hd_query* q, const hd_dictionary_style** out_styles, size_t* out_count) {
+  try {
+    auto s = std::make_unique<hd_styles>();
+    s->res = q->query.get_styles();
+
+    s->styles.reserve(s->res.size());
+    for (const auto& style : s->res) {
+      s->styles.push_back(hd_dictionary_style{hd_str{style.dict_name.c_str(), style.dict_name.size()},
+                                              hd_str{style.styles.c_str(), style.styles.size()}});
+    }
+
+    *out_styles = s->styles.data();
+    *out_count = s->styles.size();
+    return s.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void hd_styles_free(hd_styles* s) { delete s; }
