@@ -38,6 +38,7 @@ void hd_deinflector_free(hd_deinflector* d);
 // query
 typedef struct hd_query hd_query;
 typedef struct hd_results hd_results;
+typedef struct hd_kanji_results hd_kanji_results;
 typedef struct hd_styles hd_styles;
 
 typedef struct hd_frequency {
@@ -98,16 +99,37 @@ typedef struct hd_term_result {
   size_t pitches_count;
 } hd_term_result;
 
+typedef struct hd_kanji_stat {
+  hd_str key;
+  hd_str value;
+} hd_kanji_stat;
+
+typedef struct hd_kanji_entry {
+  hd_str dict_name;
+  hd_str onyomi;
+  hd_str kunyomi;
+  hd_str tags;
+  const hd_str* definitions;
+  size_t definitions_count;
+  const hd_kanji_stat* stats;
+  size_t stats_count;
+} hd_kanji_entry;
+
 hd_query* hd_query_new(void);
 void hd_query_free(hd_query* q);
 
 int hd_query_add_term_dict(hd_query* q, const char* path);
 int hd_query_add_freq_dict(hd_query* q, const char* path);
 int hd_query_add_pitch_dict(hd_query* q, const char* path);
+int hd_query_add_kanji_dict(hd_query* q, const char* path);
 
 hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_term_result** out_terms,
                          size_t* out_count);
 void hd_results_free(hd_results* r);
+
+hd_kanji_results* hd_query_run_kanji(const hd_query* q, const char* kanji, const hd_kanji_entry** out_entries,
+                                     size_t* out_count);
+void hd_kanji_results_free(hd_kanji_results* r);
 
 hd_media_file hd_query_get_media_file(const hd_query* q, const char* dict_name, const char* media_path);
 

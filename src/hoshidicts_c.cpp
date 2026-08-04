@@ -80,6 +80,13 @@ struct hd_results {
   std::vector<hd_str> transcriptions;
 };
 
+struct hd_kanji_results {
+  KanjiResult res;
+  std::vector<hd_kanji_entry> entries;
+  std::vector<hd_str> definitions;
+  std::vector<hd_kanji_stat> stats;
+};
+
 struct hd_styles {
   std::vector<DictionaryStyle> res;
   std::vector<hd_dictionary_style> styles;
@@ -116,6 +123,15 @@ int hd_query_add_freq_dict(hd_query* q, const char* path) {
 int hd_query_add_pitch_dict(hd_query* q, const char* path) {
   try {
     q->query.add_pitch_dict(path);
+    return 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+int hd_query_add_kanji_dict(hd_query* q, const char* path) {
+  try {
+    q->query.add_kanji_dict(path);
     return 0;
   } catch (...) {
     return 1;
@@ -228,6 +244,55 @@ hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_ter
 }
 
 void hd_results_free(hd_results* r) { delete r; }
+
+hd_kanji_results* hd_query_run_kanji(const hd_query* q, const char* kanji, const hd_kanji_entry** out_entries,
+                                     size_t* out_count) {
+  try {
+    auto r = std::make_unique<hd_kanji_results>();
+    r->res = q->query.query_kanji(kanji);
+
+    size_t definitions_count = 0;
+    size_t stats_count = 0;
+    for (const auto& entry : r->res.entries) {
+      definitions_count += entry.definitions.size();
+      stats_count += entry.stats.size();
+    }
+    r->definitions.reserve(definitions_count);
+    r->stats.reserve(stats_count);
+
+    for (const auto& entry : r->res.entries) {
+      hd_kanji_entry ke;
+      ke.dict_name = hd_str{entry.dict_name.c_str(), entry.dict_name.size()};
+      ke.onyomi = hd_str{entry.onyomi.c_str(), entry.onyomi.size()};
+      ke.kunyomi = hd_str{entry.kunyomi.c_str(), entry.kunyomi.size()};
+      ke.tags = hd_str{entry.tags.c_str(), entry.tags.size()};
+
+      size_t definitions_start = r->definitions.size();
+      for (const auto& definition : entry.definitions) {
+        r->definitions.push_back(hd_str{definition.c_str(), definition.size()});
+      }
+      ke.definitions = r->definitions.data() + definitions_start;
+      ke.definitions_count = entry.definitions.size();
+
+      size_t stats_start = r->stats.size();
+      for (const auto& [key, value] : entry.stats) {
+        r->stats.push_back(hd_kanji_stat{hd_str{key.c_str(), key.size()}, hd_str{value.c_str(), value.size()}});
+      }
+      ke.stats = r->stats.data() + stats_start;
+      ke.stats_count = entry.stats.size();
+
+      r->entries.push_back(ke);
+    }
+
+    *out_entries = r->entries.data();
+    *out_count = r->entries.size();
+    return r.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void hd_kanji_results_free(hd_kanji_results* r) { delete r; }
 
 hd_media_file hd_query_get_media_file(const hd_query* q, const char* dict_name, const char* media_path) {
   try {
