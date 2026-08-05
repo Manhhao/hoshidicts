@@ -3,6 +3,7 @@
 #include <utf8.h>
 
 #include <algorithm>
+#include <climits>
 #include <map>
 #include <ranges>
 #include <sstream>
