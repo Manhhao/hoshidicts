@@ -10,7 +10,9 @@ Checks: >
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
   -bugprone-easily-swappable-parameters,
-  -readability-math-missing-parentheses
+  -readability-math-missing-parentheses,
+  -modernize-use-using,
+  -modernize-deprecated-headers
 
 CheckOptions:
   - { key: readability-identifier-naming.NamespaceCase,          value: lower_case }

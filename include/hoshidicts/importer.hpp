@@ -47,7 +47,7 @@ struct ImportResult {
   bool success = false;
   std::string title;
   Summary summary;
-  std::vector<std::string> errors;
+  std::string error;
 };
 
 namespace dictionary_importer {
