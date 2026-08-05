@@ -46,6 +46,8 @@ uint64_t hd_import_result_pitch_count(const hd_import_result* r) {
   return meta_count(r->result.summary.counts.termMeta, "pitch") + meta_count(r->result.summary.counts.termMeta, "ipa");
 }
 
+uint64_t hd_import_result_kanji_count(const hd_import_result* r) { return r->result.summary.counts.kanji.total; }
+
 uint64_t hd_import_result_media_count(const hd_import_result* r) { return r->result.summary.counts.media.total; }
 
 const char* hd_import_result_error(const hd_import_result* r) { return r->result.error.c_str(); }
