@@ -18,7 +18,7 @@
 	url = https://github.com/ebiggers/libdeflate.git
 [submodule "external/utf8proc"]
 	path = external/utf8proc
-	url = git@github.com:JuliaStrings/utf8proc.git
+	url = https://github.com/JuliaStrings/utf8proc.git
 [submodule "external/kanji-processor"]
 	path = external/kanji-processor
 	url = https://github.com/yomidevs/kanji-processor.git
