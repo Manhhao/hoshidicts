@@ -33,6 +33,7 @@ add_library(hoshidicts
     src/zip/zip.cpp
     src/json/yomitan_parser.cpp
     src/text_processor/text_processor.cpp
+    src/text_processor/kanji_variants.cpp
     src/deinflector.cpp
     src/query.cpp
     src/lookup.cpp

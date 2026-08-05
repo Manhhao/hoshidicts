@@ -4,10 +4,8 @@
 #include <utf8.h>
 #include <utf8proc.h>
 
-#include <array>
 #include <cstdint>
 #include <functional>
-#include <glaze/glaze.hpp>
 #include <map>
 #include <ranges>
 #include <string>
@@ -16,12 +14,8 @@
 #include <utility>
 #include <vector>
 
-namespace internal {
-struct KanjiMapping {
-  std::string oyaji;
-  std::vector<std::string> itaiji;
-};
-}
+extern const char32_t kanji_variants[][2];
+extern const unsigned kanji_variants_count;
 
 namespace {
 struct TextProcessor {
@@ -207,24 +201,12 @@ std::u32string alphanumeric_to_fullwidth(const std::u32string& text) {
   return result;
 }
 
-constexpr auto mapping_list = std::to_array<unsigned char>({
-#embed "../../external/kanji-processor/src/full_list.json"
-});
-
 std::u32string standardize_kanji(const std::u32string& text) {
   static const auto map = [] {
-    std::vector<internal::KanjiMapping> list;
-    if (glz::read_json(list,
-                       std::string_view{reinterpret_cast<const char*>(mapping_list.data()), mapping_list.size()})) {
-      return ankerl::unordered_dense::map<char32_t, char32_t>{};
-    };
-
     ankerl::unordered_dense::map<char32_t, char32_t> m;
-    for (const auto& [oyaji, itaiji] : list) {
-      const char32_t parent = utf8::utf8to32(oyaji).front();
-      for (const auto& variant : itaiji) {
-        m[utf8::utf8to32(variant).front()] = parent;
-      }
+    m.reserve(kanji_variants_count);
+    for (unsigned i = 0; i < kanji_variants_count; ++i) {
+      m[kanji_variants[i][0]] = kanji_variants[i][1];
     }
     return m;
   }();
