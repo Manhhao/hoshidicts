@@ -9,6 +9,9 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(HOSHIDICTS_CLI "hoshidicts cli" OFF)
+option(HOSHIDICTS_BENCHMARK "hoshidicts import and lookup benchmarks" OFF)
+
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "")
@@ -54,34 +57,38 @@ target_link_libraries(hoshidicts PRIVATE
     utf8proc::utf8proc
 )
 
-add_executable(hoshidicts-cli
-    cli/main.cpp
-)
+if(HOSHIDICTS_CLI)
+    add_executable(hoshidicts-cli
+        cli/main.cpp
+    )
 
-add_executable(hoshidicts-cli-c
-    cli/main.c
-)
+    add_executable(hoshidicts-cli-c
+        cli/main.c
+    )
 
-target_link_libraries(hoshidicts-cli PRIVATE
-    hoshidicts
-)
+    target_link_libraries(hoshidicts-cli PRIVATE
+        hoshidicts
+    )
 
-target_link_libraries(hoshidicts-cli-c PRIVATE
-    hoshidicts
-)
+    target_link_libraries(hoshidicts-cli-c PRIVATE
+        hoshidicts
+    )
+endif()
 
-add_executable(benchmark-import
-    benchmark/import.cpp
-)
+if(HOSHIDICTS_BENCHMARK)
+    add_executable(benchmark-import
+        benchmark/import.cpp
+    )
 
-target_link_libraries(benchmark-import PRIVATE
-    hoshidicts
-)
+    target_link_libraries(benchmark-import PRIVATE
+        hoshidicts
+    )
 
-add_executable(benchmark-lookup
-    benchmark/lookup.cpp
-)
+    add_executable(benchmark-lookup
+        benchmark/lookup.cpp
+    )
 
-target_link_libraries(benchmark-lookup PRIVATE
-    hoshidicts
-)
+    target_link_libraries(benchmark-lookup PRIVATE
+        hoshidicts
+    )
+endif()
