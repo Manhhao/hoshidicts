@@ -1,12 +1,12 @@
 #pragma once
 #include <cstdint>
-#include <string>
+#include <filesystem>
 #include <vector>
 
 namespace hash {
 class bloom {
  public:
-  static void build_to_file(const std::vector<uint64_t>& hashes, const std::string& path);
+  static void build_to_file(const std::vector<uint64_t>& hashes, const std::filesystem::path& path);
   bool load(const uint8_t* ptr, size_t size);
 
   bool contains(uint64_t h) const {

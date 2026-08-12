@@ -16,11 +16,9 @@ T read_at(const uint8_t* base, size_t offset) {
 }
 }
 
-Zip::~Zip() {
-  memory::unmap(file);
-}
+Zip::~Zip() { memory::unmap(file); }
 
-bool Zip::open(const std::string& path) {
+bool Zip::open(const std::filesystem::path& path) {
   file = memory::map_rd(path);
   if (!file) {
     return false;
