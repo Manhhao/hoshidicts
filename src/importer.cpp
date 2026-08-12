@@ -24,6 +24,7 @@
 #include "hash/bloom.hpp"
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
+#include "path_utils.hpp"
 #include "zip/zip.hpp"
 
 namespace {
@@ -571,13 +572,13 @@ std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>&
   return offset_buf;
 }
 
-size_t write_media(const std::string& path, const Zip& zip, const std::vector<int>& files) {
+size_t write_media(const std::filesystem::path& path, const Zip& zip, const std::vector<int>& files) {
   if (files.empty()) {
     return 0;
   }
 
-  std::ofstream media(path + "/media.bin", std::ios::binary);
-  std::ofstream media_idx(path + "/media.idx", std::ios::binary);
+  std::ofstream media(path / "media.bin", std::ios::binary);
+  std::ofstream media_idx(path / "media.idx", std::ios::binary);
   setup_stream_exceptions(media);
   setup_stream_exceptions(media_idx);
 
@@ -618,9 +619,12 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
 
 ImportResult dictionary_importer::import(const std::string& zip_path, const std::string& output_dir, bool low_ram) {
   ImportResult result;
+  std::filesystem::path dict_path;
   try {
+    const std::filesystem::path native_zip_path = path_utils::from_utf8(zip_path);
+    const std::filesystem::path native_output_dir = path_utils::from_utf8(output_dir);
     Zip zip;
-    if (!zip.open(zip_path)) {
+    if (!zip.open(native_zip_path)) {
       throw std::runtime_error("failed to open zip");
     }
 
@@ -640,8 +644,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.title = index.title;
 
-    std::filesystem::path dict_path = std::filesystem::path(output_dir) / result.title;
-    std::string path = dict_path.string();
+    dict_path = native_output_dir / path_utils::from_utf8(result.title);
     std::filesystem::create_directories(dict_path);
 
     std::string styles;
@@ -652,10 +655,10 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.summary = create_summary(index, styles);
     const Files files = get_files(zip);
-    std::future<size_t> media_thread =
-        std::async(std::launch::async, [&path, &zip, &files]() { return write_media(path, zip, files.media_files); });
+    std::future<size_t> media_thread = std::async(
+        std::launch::async, [&dict_path, &zip, &files]() { return write_media(dict_path, zip, files.media_files); });
 
-    std::ofstream blobs(path + "/blobs.bin", std::ios::binary);
+    std::ofstream blobs(dict_path / "blobs.bin", std::ios::binary);
     setup_stream_exceptions(blobs);
     std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
@@ -671,11 +674,11 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     auto offset_buf = build_offset_index(offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
-    auto hash_thread = std::async(std::launch::async, [&hash_entries, &path]() {
+    auto hash_thread = std::async(std::launch::async, [&hash_entries, &dict_path]() {
       hash::linear table;
-      table.build_to_file(hash_entries, path + "/hash.table");
+      table.build_to_file(hash_entries, dict_path / "hash.table");
       auto hashes = hash_entries | std::views::keys | std::ranges::to<std::vector>();
-      hash::bloom::build_to_file(hashes, path + "/bloom.filter");
+      hash::bloom::build_to_file(hashes, dict_path / "bloom.filter");
     });
 
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
@@ -683,11 +686,15 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.summary.counts.media.total = media_thread.get();
 
-    if (glz::write_file_json(result.summary, path + "/index.json", std::string{})) {
+    std::string summary_json;
+    if (glz::write_json(result.summary, summary_json)) {
       throw std::runtime_error("failed to write index.json");
     }
+    std::ofstream index_file(dict_path / "index.json", std::ios::binary);
+    setup_stream_exceptions(index_file);
+    index_file.write(summary_json.data(), static_cast<std::streamsize>(summary_json.size()));
 
-    std::ofstream sui(path + "/.hoshidicts_3", std::ios::binary);
+    std::ofstream sui(dict_path / ".hoshidicts_3", std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;
@@ -697,8 +704,9 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     result.error = e.what();
   }
 
-  if (!result.success && !result.title.empty()) {
-    std::filesystem::remove_all(std::filesystem::path(output_dir) / result.title);
+  if (!result.success && !dict_path.empty()) {
+    std::error_code error;
+    std::filesystem::remove_all(dict_path, error);
   }
 
   return result;

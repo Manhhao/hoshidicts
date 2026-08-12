@@ -24,7 +24,7 @@ bool bloom::load(const uint8_t* ptr, size_t size) {
   return true;
 }
 
-void bloom::build_to_file(const std::vector<uint64_t>& hashes, const std::string& path) {
+void bloom::build_to_file(const std::vector<uint64_t>& hashes, const std::filesystem::path& path) {
   uint64_t num_bits = std::bit_ceil(std::max<uint64_t>(hashes.size() * 10, 64));
   uint64_t mask = num_bits - 1;
 

@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <filesystem>
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "bloom.hpp"
@@ -13,7 +13,7 @@ class linear {
   ~linear();
   uint64_t operator()(std::string_view key) const;
 
-  void build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries, const std::string& path);
+  void build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries, const std::filesystem::path& path);
   bool load(uint8_t* ptr, size_t size);
   void set_bloom(const bloom* b) { bloom_ = b; }
 

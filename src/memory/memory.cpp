@@ -10,10 +10,10 @@
 #endif
 
 namespace memory {
-mapped_file map_rd(const std::string& path) {
+mapped_file map_rd(const std::filesystem::path& path) {
 #ifdef _WIN32
   HANDLE file =
-      CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     return {};
   }
@@ -24,7 +24,7 @@ mapped_file map_rd(const std::string& path) {
     return {};
   }
 
-  HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+  HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
   CloseHandle(file);
   if (!mapping) {
     return {};
@@ -43,7 +43,7 @@ mapped_file map_rd(const std::string& path) {
     return {};
   }
 
-  struct stat st {};
+  struct stat st{};
   if (fstat(fd, &st) != 0 || st.st_size == 0) {
     close(fd);
     return {};
@@ -59,14 +59,14 @@ mapped_file map_rd(const std::string& path) {
 #endif
 }
 
-mapped_file map_rw(const std::string& path, size_t file_size) {
+mapped_file map_rw(const std::filesystem::path& path, size_t file_size) {
   if (file_size == 0) {
     return {};
   }
 
 #ifdef _WIN32
-  HANDLE file = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                            nullptr);
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     return {};
   }
@@ -78,7 +78,7 @@ mapped_file map_rw(const std::string& path, size_t file_size) {
     return {};
   }
 
-  HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READWRITE, size.HighPart, size.LowPart, nullptr);
+  HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READWRITE, size.HighPart, size.LowPart, nullptr);
   CloseHandle(file);
   if (!mapping) {
     return {};

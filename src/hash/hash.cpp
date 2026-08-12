@@ -32,7 +32,8 @@ uint64_t linear::operator()(std::string_view key) const {
   }
 }
 
-void linear::build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries, const std::string& path) {
+void linear::build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& hash_entries,
+                           const std::filesystem::path& path) {
   ptr_->capacity = std::max<uint64_t>(hash_entries.size() * 10 / 7, 16);
   size_t file_size = sizeof(uint32_t) + ptr_->capacity * sizeof(slot);
 
@@ -40,7 +41,7 @@ void linear::build_to_file(const std::vector<std::pair<uint64_t, uint64_t>>& has
   if (!out) {
     throw std::runtime_error("failed to create hash table");
   }
- 
+
   std::memcpy(out.data, &ptr_->capacity, sizeof(uint32_t));
   ptr_->table = reinterpret_cast<slot*>(out.data + sizeof(uint32_t));
   std::memset(ptr_->table, 0, ptr_->capacity * sizeof(slot));
