@@ -58,8 +58,6 @@ target_link_libraries(hoshidicts PRIVATE
 )
 
 if(MSVC)
-    # deinflector.cpp and text_processor.cpp hold UTF-8 literals and carry no BOM,
-    # so MSVC would otherwise read them as the system code page.
     target_compile_options(hoshidicts PRIVATE /utf-8)
 endif()
 
