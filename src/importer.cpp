@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -77,6 +79,17 @@ void write_val(std::vector<char>& out, T value) {
   const size_t old_size = out.size();
   out.resize(old_size + sizeof(T));
   std::memcpy(out.data() + old_size, &value, sizeof(T));
+}
+
+// Dictionary contents decide these lengths, so a narrowing conversion here would
+// write a wrapped length prefix while write_str still emits every byte, leaving
+// the bank unreadable from that record on. Fail the import instead.
+template <typename T>
+T checked_size(size_t size, std::string_view label) {
+  if (size > static_cast<size_t>(std::numeric_limits<T>::max())) {
+    throw std::length_error(std::string(label) + " exceeds the native dictionary format");
+  }
+  return static_cast<T>(size);
 }
 
 void write_str(std::vector<char>& out, std::string_view value) {
@@ -184,7 +197,7 @@ ProcessedFile process_term_bank(const std::string& content) {
   }
 
   std::vector<char> compressed;
-  ZSTD_CCtx* cctx = ZSTD_createCCtx();
+  std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> cctx(ZSTD_createCCtx(), ZSTD_freeCCtx);
   if (!cctx) {
     return processed;
   }
@@ -197,9 +210,8 @@ ProcessedFile process_term_bank(const std::string& content) {
       const size_t bound = ZSTD_compressBound(glossary.size());
       compressed.resize(bound);
       const size_t compressed_size =
-          ZSTD_compressCCtx(cctx, compressed.data(), bound, glossary.data(), glossary.size(), 0);
+          ZSTD_compressCCtx(cctx.get(), compressed.data(), bound, glossary.data(), glossary.size(), 0);
       if (ZSTD_isError(compressed_size)) {
-        ZSTD_freeCCtx(cctx);
         throw std::runtime_error("failed to compress glossary");
       }
       compressed.resize(compressed_size);
@@ -207,15 +219,15 @@ ProcessedFile process_term_bank(const std::string& content) {
     }
 
     uint64_t offset = processed.data.size();
-    uint32_t blob_size = processed.glossaries[glossary_hash].size();
+    const auto blob_size = checked_size<uint32_t>(processed.glossaries[glossary_hash].size(), "compressed glossary");
     std::string_view expr = term.expression;
     std::string_view reading = term.reading.empty() ? expr : term.reading;
     std::string_view definition_tags = term.definition_tags.value_or("");
 
     write_val<uint8_t>(processed.data, 0);
-    write_val<uint16_t>(processed.data, expr.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(expr.size(), "term expression"));
     write_str(processed.data, expr);
-    write_val<uint16_t>(processed.data, reading.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(reading.size(), "term reading"));
     write_str(processed.data, reading);
 
     uint64_t glossary_offset = processed.data.size();
@@ -223,13 +235,17 @@ ProcessedFile process_term_bank(const std::string& content) {
     write_val<uint32_t>(processed.data, blob_size);
     processed.glossary_offsets.emplace_back(glossary_hash, glossary_offset);
 
-    write_val<uint8_t>(processed.data, definition_tags.size());
+    write_val<uint8_t>(processed.data, checked_size<uint8_t>(definition_tags.size(), "definition tags"));
     write_str(processed.data, definition_tags);
-    write_val<uint8_t>(processed.data, term.rules.size());
+    write_val<uint8_t>(processed.data, checked_size<uint8_t>(term.rules.size(), "term rules"));
     write_str(processed.data, term.rules);
-    write_val<uint8_t>(processed.data, term.term_tags.size());
+    write_val<uint8_t>(processed.data, checked_size<uint8_t>(term.term_tags.size(), "term tags"));
     write_str(processed.data, term.term_tags);
     write_val<uint32_t>(processed.data, 0);
+    if (!std::isfinite(term.score) || term.score < std::numeric_limits<int32_t>::min() ||
+        term.score > std::numeric_limits<int32_t>::max()) {
+      throw std::out_of_range("term score exceeds the native dictionary format");
+    }
     write_val<int32_t>(processed.data, static_cast<int32_t>(term.score));
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
@@ -238,7 +254,6 @@ ProcessedFile process_term_bank(const std::string& content) {
     }
     processed.count++;
   }
-  ZSTD_freeCCtx(cctx);
 
   return processed;
 }
@@ -261,11 +276,11 @@ ProcessedFile process_meta_bank(const std::string& content) {
     std::string_view data = meta.data.str;
 
     write_val<uint8_t>(processed.data, 1);
-    write_val<uint16_t>(processed.data, expr.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(expr.size(), "meta expression"));
     write_str(processed.data, expr);
-    write_val<uint8_t>(processed.data, mode.size());
+    write_val<uint8_t>(processed.data, checked_size<uint8_t>(mode.size(), "meta mode"));
     write_str(processed.data, mode);
-    write_val<uint32_t>(processed.data, data.size());
+    write_val<uint32_t>(processed.data, checked_size<uint32_t>(data.size(), "meta data"));
     write_str(processed.data, data);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
@@ -296,26 +311,26 @@ ProcessedFile process_kanji_bank(const std::string& content) {
     std::string_view tags = kanji.tags;
 
     write_val<uint8_t>(processed.data, 2);
-    write_val<uint8_t>(processed.data, character.size());
+    write_val<uint8_t>(processed.data, checked_size<uint8_t>(character.size(), "kanji character"));
     write_str(processed.data, character);
-    write_val<uint16_t>(processed.data, onyomi.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(onyomi.size(), "kanji onyomi"));
     write_str(processed.data, onyomi);
-    write_val<uint16_t>(processed.data, kunyomi.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(kunyomi.size(), "kanji kunyomi"));
     write_str(processed.data, kunyomi);
-    write_val<uint16_t>(processed.data, tags.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(tags.size(), "kanji tags"));
     write_str(processed.data, tags);
 
-    write_val<uint16_t>(processed.data, kanji.definitions.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(kanji.definitions.size(), "kanji definition count"));
     for (auto& def : kanji.definitions) {
-      write_val<uint16_t>(processed.data, def.size());
+      write_val<uint16_t>(processed.data, checked_size<uint16_t>(def.size(), "kanji definition"));
       write_str(processed.data, def);
     }
 
-    write_val<uint16_t>(processed.data, kanji.stats.size());
+    write_val<uint16_t>(processed.data, checked_size<uint16_t>(kanji.stats.size(), "kanji stat count"));
     for (auto& [k, v] : kanji.stats) {
-      write_val<uint16_t>(processed.data, k.size());
+      write_val<uint16_t>(processed.data, checked_size<uint16_t>(k.size(), "kanji stat key"));
       write_str(processed.data, k);
-      write_val<uint16_t>(processed.data, v.size());
+      write_val<uint16_t>(processed.data, checked_size<uint16_t>(v.size(), "kanji stat value"));
       write_str(processed.data, v);
     }
 
@@ -593,9 +608,9 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
 
     uint32_t record_start = write_pos;
     buf.clear();
-    write_val<uint16_t>(buf, media_file->path.size());
+    write_val<uint16_t>(buf, checked_size<uint16_t>(media_file->path.size(), "media path"));
     write_str(buf, media_file->path);
-    write_val<uint32_t>(buf, media_file->blob.size());
+    write_val<uint32_t>(buf, checked_size<uint32_t>(media_file->blob.size(), "media blob"));
     write_bytes(buf, media_file->blob.data(), media_file->blob.size());
     media.write(buf.data(), static_cast<std::streamsize>(buf.size()));
     write_pos += buf.size();
@@ -606,7 +621,7 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
 
   std::ranges::sort(index_entries);
   std::vector<char> index_buf;
-  write_val<uint32_t>(index_buf, index_entries.size());
+  write_val<uint32_t>(index_buf, checked_size<uint32_t>(index_entries.size(), "media index"));
   for (const auto& [name, offset] : index_entries) {
     write_val<uint64_t>(index_buf, offset);
   }
