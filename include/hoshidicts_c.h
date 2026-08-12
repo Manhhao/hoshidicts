@@ -43,8 +43,11 @@ typedef struct hd_kanji_results hd_kanji_results;
 typedef struct hd_styles hd_styles;
 
 typedef struct hd_frequency {
-  int32_t value;
+  double value;
   hd_str display_value;
+  // Distinguishes an archive that supplied no display value from one that
+  // supplied an empty string.
+  int display_value_is_null;
 } hd_frequency;
 
 typedef struct hd_dictionary_style {

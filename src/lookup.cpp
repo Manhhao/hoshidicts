@@ -21,17 +21,18 @@ std::vector<std::string> split_whitespace(const std::string& str) {
   return result;
 }
 
-std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_view dictionary_name, bool descending) {
-  std::optional<int> frequency;
+std::optional<double> get_freq_value_for_dict(const TermResult& term, std::string_view dictionary_name,
+                                              bool descending) {
+  std::optional<double> frequency;
   for (const auto& frequency_entry : term.frequencies) {
     if (frequency_entry.dict_name != dictionary_name || frequency_entry.frequencies.empty()) {
       continue;
     }
 
     for (const auto& candidate : frequency_entry.frequencies) {
-      frequency = frequency.has_value() ? std::optional<int>(descending ? std::max(*frequency, candidate.value)
-                                                                       : std::min(*frequency, candidate.value))
-                                        : std::optional<int>(candidate.value);
+      frequency = frequency.has_value() ? std::optional<double>(descending ? std::max(*frequency, candidate.value)
+                                                                          : std::min(*frequency, candidate.value))
+                                        : std::optional<double>(candidate.value);
     }
   }
 

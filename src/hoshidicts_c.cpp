@@ -168,7 +168,10 @@ static void build_frequencies(std::vector<hd_frequency_entry>& entries, std::vec
 
     size_t frequencies_start = frequencies.size();
     for (const auto& freq : freq_entry.frequencies) {
-      frequencies.push_back(hd_frequency{freq.value, hd_str{freq.display_value.c_str(), freq.display_value.size()}});
+      const bool is_null = !freq.display_value.has_value();
+      const hd_str display =
+          is_null ? hd_str{nullptr, 0} : hd_str{freq.display_value->c_str(), freq.display_value->size()};
+      frequencies.push_back(hd_frequency{freq.value, display, static_cast<int>(is_null)});
     }
     frq.frequencies = frequencies.data() + frequencies_start;
     frq.frequencies_count = freq_entry.frequencies.size();

@@ -107,7 +107,7 @@ void cmd_freq(const std::string& path, const std::string& expression, const std:
   for (auto& freq : terms[0].frequencies) {
     std::cout << std::format("dict: {}\n", freq.dict_name);
     for (auto& freq_entry : freq.frequencies) {
-      std::cout << std::format("val: {} display_val: {}\n", freq_entry.value, freq_entry.display_value);
+      std::cout << std::format("val: {} display_val: {}\n", freq_entry.value, freq_entry.display_value.value_or("<null>"));
       count++;
     }
   }
