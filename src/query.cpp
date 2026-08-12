@@ -12,6 +12,7 @@
 #include <fstream>
 #include <memory>
 #include <ranges>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -20,6 +21,33 @@
 #include "memory/memory.hpp"
 
 namespace {
+constexpr size_t MAX_KANJI_RESULT_ENTRIES = 64;
+constexpr size_t MAX_KANJI_RESULT_STRINGS = 4096;
+constexpr size_t MAX_KANJI_RESULT_BYTES = 256 * 1024;
+
+class KanjiResultBudget {
+ public:
+  void claim_entry() {
+    if (entries_ >= MAX_KANJI_RESULT_ENTRIES) {
+      throw std::length_error("kanji query exceeded the entry limit");
+    }
+    ++entries_;
+  }
+
+  void claim_string(std::string_view value) {
+    if (strings_ >= MAX_KANJI_RESULT_STRINGS || value.size() > MAX_KANJI_RESULT_BYTES - bytes_) {
+      throw std::length_error("kanji query exceeded the aggregate string limit");
+    }
+    ++strings_;
+    bytes_ += value.size();
+  }
+
+ private:
+  size_t entries_ = 0;
+  size_t strings_ = 0;
+  size_t bytes_ = 0;
+};
+
 template <typename T>
 T read_val(const uint8_t*& addr) {
   T val;
@@ -376,6 +404,8 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
 KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
   KanjiResult result;
   result.character = kanji;
+  KanjiResultBudget budget;
+  budget.claim_string(kanji);
 
   for (const auto& [name, styles, data] : kanji_dicts_) {
     uint64_t offset_addr = data->table(kanji);
@@ -409,6 +439,12 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
       auto tags_len = read_val<uint16_t>(blob_addr);
       std::string_view tags = read_str(blob_addr, tags_len);
 
+      budget.claim_entry();
+      budget.claim_string(name);
+      budget.claim_string(onyomi);
+      budget.claim_string(kunyomi);
+      budget.claim_string(tags);
+
       KanjiEntry entry;
       entry.dict_name = name;
       entry.onyomi = onyomi;
@@ -419,6 +455,7 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
       for (uint16_t j = 0; j < def_count; j++) {
         auto def_len = read_val<uint16_t>(blob_addr);
         std::string_view def = read_str(blob_addr, def_len);
+        budget.claim_string(def);
         entry.definitions.emplace_back(def);
       }
 
@@ -428,6 +465,8 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
         std::string_view key = read_str(blob_addr, key_len);
         auto val_len = read_val<uint16_t>(blob_addr);
         std::string_view val = read_str(blob_addr, val_len);
+        budget.claim_string(key);
+        budget.claim_string(val);
         entry.stats.emplace(key, val);
       }
 
