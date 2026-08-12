@@ -1,6 +1,7 @@
 #include "yomitan_parser.hpp"
 
 #include <string_view>
+#include <tuple>
 #include <variant>
 
 template <>
@@ -132,6 +133,43 @@ bool yomitan_parser::parse_index(std::string_view content, Index& out) {
 bool yomitan_parser::parse_term_bank(std::string_view content, std::vector<Term>& out) {
   auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
   return !error;
+}
+
+bool yomitan_parser::parse_glossary(std::string_view content, ParsedGlossary& out) {
+  std::vector<glz::raw_json> definitions;
+  if (glz::read_json(definitions, content)) {
+    return false;
+  }
+
+  ParsedGlossary result;
+  result.display_json.push_back('[');
+  for (const auto& definition : definitions) {
+    const size_t first_token = definition.str.find_first_not_of(" \t\r\n");
+    if (first_token == std::string::npos || definition.str[first_token] != '[') {
+      if (result.has_display_definitions) {
+        result.display_json.push_back(',');
+      }
+      result.display_json.append(definition.str);
+      result.has_display_definitions = true;
+      continue;
+    }
+
+    // Yomitan treats every top-level array as dictionary deinflection metadata
+    // and never displays it as a definition. Only schema-valid tuples are
+    // followed; malformed arrays are safely stripped.
+    std::tuple<std::string, std::vector<std::string>> tuple;
+    if (glz::read_json(tuple, definition.str)) {
+      continue;
+    }
+    auto& [form_of, inflection_rules] = tuple;
+    if (!form_of.empty()) {
+      result.redirects.push_back(
+          TermRedirect{.form_of = std::move(form_of), .inflection_rules = std::move(inflection_rules)});
+    }
+  }
+  result.display_json.push_back(']');
+  out = std::move(result);
+  return true;
 }
 
 bool yomitan_parser::parse_meta_bank(std::string_view content, std::vector<Meta>& out) {

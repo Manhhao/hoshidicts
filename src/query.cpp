@@ -23,6 +23,10 @@
 #include "memory/memory.hpp"
 
 namespace {
+// The compressed size comes from the dictionary, so cap what a single glossary
+// may expand to before allocating for it.
+constexpr size_t MAX_GLOSSARY_BYTES = size_t{32} * 1024 * 1024;
+
 template <typename T>
 T read_val(const uint8_t*& addr) {
   T val;
@@ -35,6 +39,15 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
   std::string_view result(reinterpret_cast<const char*>(addr), len);
   addr += len;
   return result;
+}
+
+void append_redirect(std::vector<DictionaryRedirect>& redirects, DictionaryRedirect redirect) {
+  const bool duplicate = std::ranges::any_of(redirects, [&](const DictionaryRedirect& existing) {
+    return existing.form_of == redirect.form_of && existing.inflection_rules == redirect.inflection_rules;
+  });
+  if (!duplicate) {
+    redirects.push_back(std::move(redirect));
+  }
 }
 }
 
@@ -71,7 +84,9 @@ DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&
 
 void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   int version = 0;
-  if (std::filesystem::is_regular_file(path + "/.hoshidicts_3")) {
+  if (std::filesystem::is_regular_file(path + "/.hoshidicts_4")) {
+    version = 4;
+  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_3")) {
     version = 3;
   } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_2")) {
     version = 2;
@@ -167,7 +182,9 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
   auto results = query_raw(expression);
   for (auto& term : results) {
     materialize(term);
+    prune_empty_glossaries(term);
   }
+  std::erase_if(results, [](const TermResult& term) { return term.glossaries.empty(); });
   return results;
 }
 
@@ -213,16 +230,20 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
       auto term_tag_size = read_val<uint8_t>(blob_addr);
       std::string_view term_tags = read_str(blob_addr, term_tag_size);
 
+      std::vector<DictionaryRedirect> redirects;
       if (data->version >= 2) {
         auto redirect_count = read_val<uint32_t>(blob_addr);
         for (uint32_t r = 0; r < redirect_count; r++) {
           auto form_of_len = read_val<uint32_t>(blob_addr);
-          read_str(blob_addr, form_of_len);
+          std::string_view form_of = read_str(blob_addr, form_of_len);
           auto rule_count = read_val<uint32_t>(blob_addr);
+          DictionaryRedirect redirect{.form_of = std::string(form_of)};
+          redirect.inflection_rules.reserve(rule_count);
           for (uint32_t j = 0; j < rule_count; j++) {
             auto rule_len = read_val<uint32_t>(blob_addr);
-            read_str(blob_addr, rule_len);
+            redirect.inflection_rules.emplace_back(read_str(blob_addr, rule_len));
           }
+          append_redirect(redirects, std::move(redirect));
         }
       }
 
@@ -231,12 +252,36 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
         score = read_val<int32_t>(blob_addr);
       }
 
+      bool has_display_definitions = true;
+      if (data->version >= 4) {
+        has_display_definitions = read_val<uint8_t>(blob_addr) != 0;
+      }
+
       GlossaryEntry entry;
       entry.dict_name = name;
       entry.definition_tags = definition_tags;
       entry.term_tags = term_tags;
       entry.compressed_data = data->blobs.data + glossary_offset;
       entry.compressed_size = glossary_size;
+      entry.redirects = std::move(redirects);
+      entry.has_display_definitions = has_display_definitions;
+
+      if (data->version < 4) {
+        entry.glossary = decompress_glossary(entry.compressed_data, entry.compressed_size);
+        entry.materialized = true;
+        ParsedGlossary parsed_glossary;
+        if (yomitan_parser::parse_glossary(entry.glossary, parsed_glossary)) {
+          entry.glossary = std::move(parsed_glossary.display_json);
+          entry.has_display_definitions = parsed_glossary.has_display_definitions;
+          for (auto& redirect : parsed_glossary.redirects) {
+            append_redirect(entry.redirects,
+                            DictionaryRedirect{.form_of = std::move(redirect.form_of),
+                                               .inflection_rules = std::move(redirect.inflection_rules)});
+          }
+        } else {
+          entry.has_display_definitions = !entry.glossary.empty();
+        }
+      }
 
       auto [it, inserted] = term_map.try_emplace({expr, reading});
       if (inserted) {
@@ -528,7 +573,8 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) 
   }
 
   unsigned long long decompressed_size = ZSTD_getFrameContentSize(data, size);
-  if (decompressed_size == ZSTD_CONTENTSIZE_ERROR || decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN) {
+  if (decompressed_size == ZSTD_CONTENTSIZE_ERROR || decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN ||
+      decompressed_size > MAX_GLOSSARY_BYTES) {
     return "";
   }
 
@@ -546,8 +592,15 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) 
 
 void DictionaryQuery::materialize(TermResult& term) const {
   for (auto& g : term.glossaries) {
-    g.glossary = decompress_glossary(g.compressed_data, g.compressed_size);
+    if (!g.materialized) {
+      g.glossary = decompress_glossary(g.compressed_data, g.compressed_size);
+      g.materialized = true;
+    }
   }
+}
+
+void DictionaryQuery::prune_empty_glossaries(TermResult& term) {
+  std::erase_if(term.glossaries, [](const GlossaryEntry& glossary) { return !glossary.has_display_definitions; });
 }
 
 std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, const std::string& media_path) const {

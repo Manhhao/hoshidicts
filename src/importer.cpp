@@ -184,22 +184,25 @@ ProcessedFile process_term_bank(const std::string& content) {
   }
 
   std::vector<char> compressed;
-  ZSTD_CCtx* cctx = ZSTD_createCCtx();
+  std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> cctx(ZSTD_createCCtx(), ZSTD_freeCCtx);
   if (!cctx) {
     return processed;
   }
 
   for (auto& term : out) {
-    const std::string_view glossary = term.glossary.str;
+    ParsedGlossary parsed_glossary;
+    if (!yomitan_parser::parse_glossary(term.glossary.str, parsed_glossary)) {
+      throw std::runtime_error("failed to parse term glossary");
+    }
+    const std::string_view glossary = parsed_glossary.display_json;
     uint64_t glossary_hash = XXH3_64bits(glossary.data(), glossary.size());
     auto it = processed.glossaries.find(glossary_hash);
     if (it == processed.glossaries.end()) {
       const size_t bound = ZSTD_compressBound(glossary.size());
       compressed.resize(bound);
       const size_t compressed_size =
-          ZSTD_compressCCtx(cctx, compressed.data(), bound, glossary.data(), glossary.size(), 0);
+          ZSTD_compressCCtx(cctx.get(), compressed.data(), bound, glossary.data(), glossary.size(), 0);
       if (ZSTD_isError(compressed_size)) {
-        ZSTD_freeCCtx(cctx);
         throw std::runtime_error("failed to compress glossary");
       }
       compressed.resize(compressed_size);
@@ -229,8 +232,18 @@ ProcessedFile process_term_bank(const std::string& content) {
     write_str(processed.data, term.rules);
     write_val<uint8_t>(processed.data, term.term_tags.size());
     write_str(processed.data, term.term_tags);
-    write_val<uint32_t>(processed.data, 0);
+    write_val<uint32_t>(processed.data, static_cast<uint32_t>(parsed_glossary.redirects.size()));
+    for (const auto& redirect : parsed_glossary.redirects) {
+      write_val<uint32_t>(processed.data, static_cast<uint32_t>(redirect.form_of.size()));
+      write_str(processed.data, redirect.form_of);
+      write_val<uint32_t>(processed.data, static_cast<uint32_t>(redirect.inflection_rules.size()));
+      for (const auto& rule : redirect.inflection_rules) {
+        write_val<uint32_t>(processed.data, static_cast<uint32_t>(rule.size()));
+        write_str(processed.data, rule);
+      }
+    }
     write_val<int32_t>(processed.data, static_cast<int32_t>(term.score));
+    write_val<uint8_t>(processed.data, parsed_glossary.has_display_definitions ? 1 : 0);
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     if (reading != expr) {
@@ -238,7 +251,6 @@ ProcessedFile process_term_bank(const std::string& content) {
     }
     processed.count++;
   }
-  ZSTD_freeCCtx(cctx);
 
   return processed;
 }
@@ -687,7 +699,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("failed to write index.json");
     }
 
-    std::ofstream sui(path + "/.hoshidicts_3", std::ios::binary);
+    std::ofstream sui(path + "/.hoshidicts_4", std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;

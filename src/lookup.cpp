@@ -45,7 +45,39 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
                                          const LookupOptions& options) const {
+  if (max_results <= 0 || scan_length == 0) {
+    return {};
+  }
   std::map<std::pair<std::string, std::string>, LookupResult> result_map;
+
+  auto add_result = [&](TermResult term, const std::string& matched, const std::string& deinflected,
+                        std::vector<TransformGroup> trace, int preprocessor_steps) {
+    DictionaryQuery::prune_empty_glossaries(term);
+    if (term.glossaries.empty()) {
+      return;
+    }
+
+    auto key = std::make_pair(term.expression, term.reading);
+    auto it = result_map.find(key);
+    if (it != result_map.end()) {
+      // Keep the result associated with the longest source match.
+      if (utf8::distance(matched.begin(), matched.end()) <=
+          utf8::distance(it->second.matched.begin(), it->second.matched.end())) {
+        return;
+      }
+      it->second = LookupResult{.matched = matched,
+                                .deinflected = deinflected,
+                                .trace = std::move(trace),
+                                .term = std::move(term),
+                                .preprocessor_steps = preprocessor_steps};
+      return;
+    }
+    result_map.emplace(std::move(key), LookupResult{.matched = matched,
+                                                    .deinflected = deinflected,
+                                                    .trace = std::move(trace),
+                                                    .term = std::move(term),
+                                                    .preprocessor_steps = preprocessor_steps});
+  };
 
   size_t text_len = utf8::distance(lookup_string.begin(), lookup_string.end());
   size_t start = std::min(scan_length, text_len);
@@ -62,25 +94,33 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
         filter_by_pos(terms, deinflection);
 
         for (auto& term : terms) {
-          // deduplicate glossaries
-          auto key = std::make_pair(term.expression, term.reading);
-          auto it = result_map.find(key);
-          if (it != result_map.end()) {
-            // we only need the longest matched form
-            if (utf8::distance(search_str.begin(), search_str.end()) >
-                utf8::distance(it->second.matched.begin(), it->second.matched.end())) {
-              it->second = LookupResult{.matched = search_str,
-                                        .deinflected = deinflection.text,
-                                        .trace = deinflection.trace,
-                                        .term = std::move(term),
-                                        .preprocessor_steps = variant.steps};
+          std::vector<DictionaryRedirect> redirects;
+          for (const auto& glossary : term.glossaries) {
+            for (const auto& redirect : glossary.redirects) {
+              const bool duplicate = std::ranges::any_of(redirects, [&](const DictionaryRedirect& existing) {
+                return existing.form_of == redirect.form_of && existing.inflection_rules == redirect.inflection_rules;
+              });
+              if (!duplicate) {
+                redirects.push_back(redirect);
+              }
             }
-          } else {
-            result_map.emplace(key, LookupResult{.matched = search_str,
-                                                 .deinflected = deinflection.text,
-                                                 .trace = deinflection.trace,
-                                                 .term = std::move(term),
-                                                 .preprocessor_steps = variant.steps});
+          }
+
+          add_result(std::move(term), search_str, deinflection.text, deinflection.trace, variant.steps);
+
+          // Match Yomitan's dictionary deinflection pass exactly: follow each
+          // source redirect once, query all enabled term dictionaries, do not
+          // apply the source POS condition to targets, and never recurse into
+          // redirects carried by those target entries.
+          for (const auto& redirect : redirects) {
+            auto target_terms = query_.query_raw(redirect.form_of);
+            auto redirect_trace = deinflection.trace;
+            for (const auto& rule : redirect.inflection_rules) {
+              redirect_trace.push_back(TransformGroup{.name = rule, .description = ""});
+            }
+            for (auto& target_term : target_terms) {
+              add_result(std::move(target_term), search_str, redirect.form_of, redirect_trace, variant.steps);
+            }
           }
         }
       }

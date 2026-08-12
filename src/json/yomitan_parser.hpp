@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <glaze/glaze.hpp>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -33,6 +34,17 @@ struct Term {
   glz::raw_json_view glossary;
   int64_t sequence = 0;
   std::string_view term_tags;
+};
+
+struct TermRedirect {
+  std::string form_of;
+  std::vector<std::string> inflection_rules;
+};
+
+struct ParsedGlossary {
+  std::string display_json;
+  std::vector<TermRedirect> redirects;
+  bool has_display_definitions = false;
 };
 
 struct Meta {
@@ -80,6 +92,7 @@ struct ParsedPitch {
 namespace yomitan_parser {
 bool parse_index(std::string_view content, Index& out);
 bool parse_term_bank(std::string_view content, std::vector<Term>& out);
+bool parse_glossary(std::string_view content, ParsedGlossary& out);
 bool parse_meta_bank(std::string_view content, std::vector<Meta>& out);
 bool parse_kanji_bank(std::string_view content, std::vector<Kanji>& out);
 bool parse_tag_bank(std::string_view content, std::vector<Tag>& out);

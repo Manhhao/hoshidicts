@@ -28,6 +28,11 @@ struct MediaFileView {
   size_t size;
 };
 
+struct DictionaryRedirect {
+  std::string form_of;
+  std::vector<std::string> inflection_rules;
+};
+
 struct GlossaryEntry {
   std::string dict_name;
   std::string glossary;
@@ -35,6 +40,9 @@ struct GlossaryEntry {
   std::string term_tags;
   const uint8_t* compressed_data = nullptr;
   uint32_t compressed_size = 0;
+  std::vector<DictionaryRedirect> redirects;
+  bool materialized = false;
+  bool has_display_definitions = true;
 };
 
 struct FrequencyEntry {
@@ -111,6 +119,7 @@ class DictionaryQuery {
   friend class Lookup;
   std::vector<TermResult> query_raw(const std::string& expression) const;
   void materialize(TermResult& term) const;
+  static void prune_empty_glossaries(TermResult& term);
 
   struct DictionaryData;
   enum class FrequencyMode { Rank, Occurrence };
