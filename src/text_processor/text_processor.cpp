@@ -276,6 +276,8 @@ std::u32string numbers_to_kanji(const std::u32string& text) {
 // TODO: implement rest of preprocessors
 std::vector<TextProcessor> get_japanese_processors() {
   return {
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string { return opt == 1 ? nfkc(text) : text; }},
       // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese-text-preprocessors.js#L66
       {.options = {0, 1, 2},
        .process = [](const std::u32string& text, int opt) -> std::u32string {
@@ -299,8 +301,6 @@ std::vector<TextProcessor> get_japanese_processors() {
              return text;
          }
        }},
-      {.options = {0, 1},
-       .process = [](const std::u32string& text, int opt) -> std::u32string { return opt == 1 ? nfkc(text) : text; }},
       {.options = {0, 1},
        .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? alphanumeric_to_fullwidth(text) : text;
