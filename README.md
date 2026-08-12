@@ -10,7 +10,7 @@ A MIT version of the library is available on the [main-mit](https://github.com/M
 ```cpp
 ImportResult dictionary_importer::import(const std::string& zip_path, const std::string& output_dir, bool low_ram = false)
 ```
-Imports a Yomitan `.zip` dictionary file into a custom format. The resulting folder is stored in `output_dir/<dict_title>`. Glossaries are compressed using zstd. Term, frequency and pitch dictionaries are generally supported, but only a small part of the pitch accent spec was implemented. Setting `low_ram` to `true` can reduce memory usage significantly at the cost of slightly lower import speed.
+Imports a Yomitan `.zip` dictionary file into a custom format. The resulting folder is stored in `output_dir/<dict_title>`. Large term dictionaries train and store a per-import zstd dictionary in `glossary.dict` (format v4) to make repeated structured glossaries smaller and faster to decode; small inputs fall back to ordinary zstd frames and format v3. Readers remain compatible with formats v1-v3. Term, frequency and pitch dictionaries are generally supported, but only a small part of the pitch accent spec was implemented. Setting `low_ram` to `true` can reduce memory usage significantly at the cost of slightly lower import speed.
 
 ### query
 ```cpp

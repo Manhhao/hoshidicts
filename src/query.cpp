@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "compression/glossary_codec.hpp"
 #include "hash/hash.hpp"
 #include "hoshidicts/importer.hpp"
 #include "json/yomitan_parser.hpp"
@@ -45,6 +46,8 @@ struct DictionaryQuery::DictionaryData {
   memory::mapped_file bloom_filter;
   memory::mapped_file media;
   memory::mapped_file media_index;
+  memory::mapped_file glossary_dictionary;
+  glossary_codec::Decoder glossary_decoder;
 
   ~DictionaryData() {
     memory::unmap(blobs);
@@ -52,6 +55,7 @@ struct DictionaryQuery::DictionaryData {
     memory::unmap(bloom_filter);
     memory::unmap(media);
     memory::unmap(media_index);
+    memory::unmap(glossary_dictionary);
   }
 };
 
@@ -70,7 +74,9 @@ DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&
 void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
   const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   int version = 0;
-  if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
+  if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
+    version = 4;
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
     version = 3;
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_2")) {
     version = 2;
@@ -121,6 +127,19 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
   dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
     return;
+  }
+
+  if (version >= 4) {
+    dict.data->glossary_dictionary = memory::map_rd(path / "glossary.dict");
+    if (!dict.data->glossary_dictionary) {
+      return;
+    }
+    std::vector<char> dictionary(dict.data->glossary_dictionary.data,
+                                 dict.data->glossary_dictionary.data + dict.data->glossary_dictionary.size);
+    dict.data->glossary_decoder = glossary_codec::make_decoder(dictionary);
+    if (!dict.data->glossary_decoder) {
+      return;
+    }
   }
 
   dict.data->media = memory::map_rd(path / "media.bin");
@@ -230,6 +249,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
       entry.term_tags = term_tags;
       entry.compressed_data = data->blobs.data + glossary_offset;
       entry.compressed_size = glossary_size;
+      entry.compression_dictionary = data->glossary_decoder.get();
 
       auto [it, inserted] = term_map.try_emplace({expr, reading});
       if (inserted) {
@@ -444,31 +464,13 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
   return result;
 }
 
-std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) {
-  if (!data || size == 0) {
-    return "";
-  }
-
-  unsigned long long decompressed_size = ZSTD_getFrameContentSize(data, size);
-  if (decompressed_size == ZSTD_CONTENTSIZE_ERROR || decompressed_size == ZSTD_CONTENTSIZE_UNKNOWN) {
-    return "";
-  }
-
-  std::string result;
-  result.resize(decompressed_size);
-
-  size_t actual_size = ZSTD_decompress(result.data(), result.size(), data, size);
-  if (ZSTD_isError(actual_size)) {
-    return "";
-  }
-
-  result.resize(actual_size);
-  return result;
+std::string DictionaryQuery::decompress_glossary(const void* data, size_t size, const void* dictionary) {
+  return glossary_codec::decompress(data, size, static_cast<const ZSTD_DDict*>(dictionary));
 }
 
 void DictionaryQuery::materialize(TermResult& term) const {
   for (auto& g : term.glossaries) {
-    g.glossary = decompress_glossary(g.compressed_data, g.compressed_size);
+    g.glossary = decompress_glossary(g.compressed_data, g.compressed_size, g.compression_dictionary);
   }
 }
 

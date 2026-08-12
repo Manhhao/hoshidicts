@@ -34,6 +34,7 @@ struct GlossaryEntry {
   std::string term_tags;
   const uint8_t* compressed_data = nullptr;
   uint32_t compressed_size = 0;
+  const void* compression_dictionary = nullptr;
 };
 
 struct FrequencyEntry {
@@ -130,7 +131,7 @@ class DictionaryQuery {
 
   void add_dict(const std::string& path, DictionaryType);
 
-  static std::string decompress_glossary(const void* data, size_t size);
+  static std::string decompress_glossary(const void* data, size_t size, const void* dictionary = nullptr);
   std::vector<Dictionary> term_dicts_;
   std::vector<Dictionary> freq_dicts_;
   std::vector<Dictionary> pitch_dicts_;

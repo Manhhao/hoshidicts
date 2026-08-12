@@ -11,6 +11,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(HOSHIDICTS_CLI "hoshidicts cli" OFF)
 option(HOSHIDICTS_BENCHMARK "hoshidicts import and lookup benchmarks" OFF)
+option(HOSHIDICTS_TESTS "hoshidicts tests" OFF)
 
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
@@ -29,6 +30,7 @@ add_subdirectory(external/libdeflate)
 add_subdirectory(external/utf8proc)
 
 add_library(hoshidicts
+    src/compression/glossary_codec.cpp
     src/hash/hash.cpp
     src/hash/bloom.cpp
     src/importer.cpp
@@ -56,6 +58,23 @@ target_link_libraries(hoshidicts PRIVATE
     unordered_dense
     utf8proc::utf8proc
 )
+
+if(HOSHIDICTS_TESTS)
+    enable_testing()
+    add_executable(glossary-codec-test tests/glossary_codec_test.cpp)
+    target_include_directories(glossary-codec-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(glossary-codec-test PRIVATE hoshidicts libzstd_static)
+    add_test(NAME glossary-codec-test COMMAND glossary-codec-test)
+
+    add_executable(importer-format-test tests/importer_format_test.cpp)
+    target_link_libraries(importer-format-test PRIVATE hoshidicts)
+    if(DEFINED HOSHIDICTS_LARGE_TEST_DICTIONARY)
+        add_test(NAME importer-format-test COMMAND importer-format-test
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/dictionary.zip
+            ${HOSHIDICTS_LARGE_TEST_DICTIONARY}
+            ${CMAKE_CURRENT_BINARY_DIR}/importer-format-test-output)
+    endif()
+endif()
 
 if(MSVC)
     target_compile_options(hoshidicts PRIVATE /utf-8)
@@ -92,7 +111,19 @@ if(HOSHIDICTS_BENCHMARK)
         benchmark/lookup.cpp
     )
 
+    add_executable(benchmark-zdict
+        benchmark/zdict.cpp
+    )
+
     target_link_libraries(benchmark-lookup PRIVATE
         hoshidicts
+    )
+
+    target_link_libraries(benchmark-zdict PRIVATE
+        hoshidicts
+        unordered_dense
+        glaze::glaze
+        libzstd_static
+        libdeflate_static
     )
 endif()

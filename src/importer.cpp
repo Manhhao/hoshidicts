@@ -2,7 +2,7 @@
 
 #include <ankerl/unordered_dense.h>
 #include <xxh3.h>
-#include <zstd.h>
+
 
 #include <algorithm>
 #include <array>
@@ -23,6 +23,7 @@
 
 #include "hash/bloom.hpp"
 #include "hash/hash.hpp"
+#include "compression/glossary_codec.hpp"
 #include "json/yomitan_parser.hpp"
 #include "path_utils.hpp"
 #include "zip/zip.hpp"
@@ -173,7 +174,7 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
   }
 }
 
-ProcessedFile process_term_bank(const std::string& content) {
+ProcessedFile process_term_bank(const std::string& content, const std::vector<char>& compression_dictionary) {
   ProcessedFile processed;
   if (content.empty()) {
     return processed;
@@ -184,27 +185,14 @@ ProcessedFile process_term_bank(const std::string& content) {
     return processed;
   }
 
-  std::vector<char> compressed;
-  ZSTD_CCtx* cctx = ZSTD_createCCtx();
-  if (!cctx) {
-    return processed;
-  }
+  glossary_codec::Compressor compressor(compression_dictionary);
 
   for (auto& term : out) {
     const std::string_view glossary = term.glossary.str;
     uint64_t glossary_hash = XXH3_64bits(glossary.data(), glossary.size());
     auto it = processed.glossaries.find(glossary_hash);
     if (it == processed.glossaries.end()) {
-      const size_t bound = ZSTD_compressBound(glossary.size());
-      compressed.resize(bound);
-      const size_t compressed_size =
-          ZSTD_compressCCtx(cctx, compressed.data(), bound, glossary.data(), glossary.size(), 0);
-      if (ZSTD_isError(compressed_size)) {
-        ZSTD_freeCCtx(cctx);
-        throw std::runtime_error("failed to compress glossary");
-      }
-      compressed.resize(compressed_size);
-      processed.glossaries.emplace(glossary_hash, compressed);
+      processed.glossaries.emplace(glossary_hash, compressor.compress(glossary));
     }
 
     uint64_t offset = processed.data.size();
@@ -239,9 +227,33 @@ ProcessedFile process_term_bank(const std::string& content) {
     }
     processed.count++;
   }
-  ZSTD_freeCCtx(cctx);
-
   return processed;
+}
+
+std::vector<char> train_glossary_dictionary(const Zip& zip, const std::vector<int>& files) {
+  constexpr size_t sample_limit = 10000;
+  constexpr size_t dictionary_capacity = 64 * 1024;
+  ankerl::unordered_dense::set<uint64_t> seen;
+  std::vector<std::string> samples;
+  samples.reserve(sample_limit);
+  for (int file_index : files) {
+    std::string content = zip.read(file_index);
+    std::vector<Term> terms;
+    if (!yomitan_parser::parse_term_bank(content, terms)) {
+      continue;
+    }
+    for (const auto& term : terms) {
+      const std::string_view glossary = term.glossary.str;
+      const uint64_t hash = XXH3_64bits(glossary.data(), glossary.size());
+      if (seen.insert(hash).second) {
+        samples.emplace_back(glossary);
+      }
+      if (samples.size() >= sample_limit) {
+        return glossary_codec::train_dictionary(samples, dictionary_capacity);
+      }
+    }
+  }
+  return glossary_codec::train_dictionary(samples, dictionary_capacity);
 }
 
 ProcessedFile process_meta_bank(const std::string& content) {
@@ -410,7 +422,8 @@ Summary create_summary(const Index& index, std::string styles) {
 }
 
 void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
-                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
+                 const std::vector<int>& files, const std::vector<char>& compression_dictionary,
+                 uint64_t& write_offset, ImportResult& result, bool low_ram) {
   if (files.empty()) {
     return;
   }
@@ -453,8 +466,9 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   };
 
   for (int file_index : files) {
-    threads.push_back(
-        std::async(std::launch::async, [&zip, file_index]() { return process_term_bank(zip.read(file_index)); }));
+    threads.push_back(std::async(std::launch::async, [&zip, &compression_dictionary, file_index]() {
+      return process_term_bank(zip.read(file_index), compression_dictionary);
+    }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -655,6 +669,12 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.summary = create_summary(index, styles);
     const Files files = get_files(zip);
+    const std::vector<char> glossary_dictionary = train_glossary_dictionary(zip, files.term_banks);
+    if (!glossary_dictionary.empty()) {
+      std::ofstream dictionary_file(dict_path / "glossary.dict", std::ios::binary);
+      setup_stream_exceptions(dictionary_file);
+      dictionary_file.write(glossary_dictionary.data(), static_cast<std::streamsize>(glossary_dictionary.size()));
+    }
     std::future<size_t> media_thread = std::async(
         std::launch::async, [&dict_path, &zip, &files]() { return write_media(dict_path, zip, files.media_files); });
 
@@ -662,7 +682,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     setup_stream_exceptions(blobs);
     std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
-    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
+    write_terms(blobs, offsets, zip, files.term_banks, glossary_dictionary, write_offset, result, low_ram);
     write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
     write_kanji(blobs, offsets, zip, files.kanji_banks, write_offset, result, low_ram);
     count_unprocessed_banks(zip, files, result);
@@ -694,7 +714,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     setup_stream_exceptions(index_file);
     index_file.write(summary_json.data(), static_cast<std::streamsize>(summary_json.size()));
 
-    std::ofstream sui(dict_path / ".hoshidicts_3", std::ios::binary);
+    std::ofstream sui(dict_path / (glossary_dictionary.empty() ? ".hoshidicts_3" : ".hoshidicts_4"), std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;
