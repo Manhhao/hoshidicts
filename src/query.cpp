@@ -1,5 +1,4 @@
 #include "hoshidicts/query.hpp"
-#include "hoshidicts/importer.hpp"
 
 #include <ankerl/unordered_dense.h>
 #include <zstd.h>
@@ -19,8 +18,10 @@
 #include <vector>
 
 #include "hash/hash.hpp"
+#include "hoshidicts/importer.hpp"
 #include "json/yomitan_parser.hpp"
 #include "memory/memory.hpp"
+#include "path_utils.hpp"
 
 namespace {
 template <typename T>
@@ -69,13 +70,14 @@ DictionaryQuery::Dictionary::~Dictionary() = default;
 DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
-void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
+void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
+  const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   int version = 0;
-  if (std::filesystem::is_regular_file(path + "/.hoshidicts_3")) {
+  if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
     version = 3;
-  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_2")) {
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_2")) {
     version = 2;
-  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_1")) {
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_1")) {
     version = 1;
   } else {
     return;
@@ -83,22 +85,26 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
 
   Dictionary dict;
   Summary summary;
-  std::string buf{};
-  if (glz::read_file_json<glz::opts{.error_on_unknown_keys = false}>(summary, path + "/index.json", buf)) {
+  std::ifstream index_file(path / "index.json", std::ios::binary);
+  if (!index_file) {
+    return;
+  }
+  std::string buf(std::istreambuf_iterator<char>(index_file), {});
+  if (glz::read<glz::opts{.error_on_unknown_keys = false}>(summary, buf)) {
     return;
   }
 
-  dict.name = summary.title.empty() ? std::filesystem::path(path).stem().string() : summary.title;
+  dict.name = summary.title.empty() ? path_utils::to_utf8(path.stem()) : summary.title;
   dict.styles = summary.styles;
-  if (dict.styles.empty() && std::filesystem::exists(path + "/styles.css")) {
-    std::ifstream f(path + "/styles.css");
+  if (dict.styles.empty() && std::filesystem::exists(path / "styles.css")) {
+    std::ifstream f(path / "styles.css");
     dict.styles = std::string(std::istreambuf_iterator<char>(f), {});
   }
 
   dict.data = std::make_unique<DictionaryData>();
   dict.data->version = version;
 
-  dict.data->hash_table = memory::map_rd(path + "/hash.table");
+  dict.data->hash_table = memory::map_rd(path / "hash.table");
   if (!dict.data->hash_table) {
     return;
   }
@@ -106,7 +112,7 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
     return;
   }
 
-  dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
+  dict.data->bloom_filter = memory::map_rd(path / "bloom.filter");
   if (!dict.data->bloom_filter) {
     return;
   }
@@ -115,7 +121,7 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
   }
   dict.data->table.set_bloom(&dict.data->bloom);
 
-  dict.data->blobs = memory::map_rd(path + "/blobs.bin");
+  dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
     return;
   }
@@ -130,9 +136,9 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
     }
   }
 
-  dict.data->media = memory::map_rd(path + "/media.bin");
+  dict.data->media = memory::map_rd(path / "media.bin");
   if (dict.data->media) {
-    dict.data->media_index = memory::map_rd(path + "/media.idx");
+    dict.data->media_index = memory::map_rd(path / "media.idx");
   }
 
   switch (type) {

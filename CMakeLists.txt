@@ -57,6 +57,10 @@ target_link_libraries(hoshidicts PRIVATE
     utf8proc::utf8proc
 )
 
+if(MSVC)
+    target_compile_options(hoshidicts PRIVATE /utf-8)
+endif()
+
 if(HOSHIDICTS_CLI)
     add_executable(hoshidicts-cli
         cli/main.cpp
