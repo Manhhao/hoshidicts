@@ -30,7 +30,6 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
     }
 
     for (const auto& candidate : frequency_entry.frequencies) {
-      // -1 means that this entry must not participate in frequency ranking.
       if (candidate.value < 0) {
         continue;
       }
@@ -42,10 +41,6 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
 
   return frequency;
 }
-}
-
-std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length) const {
-  return lookup(lookup_string, max_results, scan_length, LookupOptions{});
 }
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
@@ -101,14 +96,10 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   bool frequency_descending = false;
   switch (options.frequency_order) {
     case LookupFrequencyOrder::Auto:
-      // Preserve the original comparator: each loaded frequency dictionary
-      // is an ascending tie-breaker, in insertion order.
       auto_frequency_dictionaries = query_.get_freq_dict_order();
       break;
     case LookupFrequencyOrder::Ascending:
     case LookupFrequencyOrder::Descending:
-      // An unknown name leaves frequency out of the comparison rather than
-      // silently falling back to a dictionary the caller did not ask for.
       if (options.frequency_dictionary.has_value()) {
         const auto selected =
             std::ranges::find(query_.freq_dicts_, *options.frequency_dictionary, &DictionaryQuery::Dictionary::name);

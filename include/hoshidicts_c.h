@@ -162,7 +162,6 @@ typedef enum hd_lookup_frequency_order {
   HD_LOOKUP_FREQUENCY_ORDER_DISABLED = 3,
 } hd_lookup_frequency_order;
 
-// A null hd_str leaves the corresponding preference unset.
 typedef struct hd_lookup_options {
   hd_str frequency_dictionary;
   int32_t frequency_order;
@@ -173,9 +172,6 @@ void hd_lookup_free(hd_lookup* l);
 
 hd_lookup_results* hd_lookup_run(const hd_lookup* l, const char* lookup_string, int max_results, size_t scan_length,
                                  const hd_lookup_result** out_results, size_t* out_count);
-// As hd_lookup_run, but applies the caller's sort preferences before the
-// max_results cap, so the cap keeps the results the caller would have ranked
-// highest. Passing a null options pointer is equivalent to hd_lookup_run.
 hd_lookup_results* hd_lookup_run_with_options(const hd_lookup* l, const char* lookup_string, int max_results,
                                               size_t scan_length, const hd_lookup_options* options,
                                               const hd_lookup_result** out_results, size_t* out_count);

@@ -440,8 +440,6 @@ hd_lookup_results* hd_lookup_run(const hd_lookup* l, const char* lookup_string, 
   }
 }
 
-// An empty hd_str means "unset"; a non-empty one with a null pointer is a
-// caller error rather than an empty preference.
 static std::optional<std::string_view> optional_string_view(hd_str value) {
   if (value.len == 0) {
     return std::nullopt;
