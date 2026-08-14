@@ -165,6 +165,9 @@ typedef enum hd_lookup_frequency_order {
 typedef struct hd_lookup_options {
   hd_str frequency_dictionary;
   int32_t frequency_order;
+  // Yomitan's primary_reading search parameter: rank results carrying this
+  // reading first. A kana-only entry's reading is its expression.
+  hd_str primary_reading;
 } hd_lookup_options;
 
 hd_lookup* hd_lookup_new(hd_query* q, hd_deinflector* d);

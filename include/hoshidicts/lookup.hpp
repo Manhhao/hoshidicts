@@ -20,6 +20,7 @@ enum class LookupFrequencyOrder { Auto, Ascending, Descending, Disabled };
 struct LookupOptions {
   std::optional<std::string> frequency_dictionary;
   LookupFrequencyOrder frequency_order = LookupFrequencyOrder::Auto;
+  std::optional<std::string_view> primary_reading;
 };
 
 class Lookup {
