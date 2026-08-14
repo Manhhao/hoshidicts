@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <climits>
 #include <map>
+#include <optional>
 #include <ranges>
 #include <sstream>
 
@@ -21,26 +22,29 @@ std::vector<std::string> split_whitespace(const std::string& str) {
   return result;
 }
 
-int get_freq_value_for_dict(const TermResult& term, const std::string& dict_name) {
+std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_view dictionary_name, bool descending) {
+  std::optional<int> frequency;
   for (const auto& frequency_entry : term.frequencies) {
-    if (frequency_entry.dict_name != dict_name) {
+    if (frequency_entry.dict_name != dictionary_name || frequency_entry.frequencies.empty()) {
       continue;
     }
 
-    int min_frequency = INT_MAX;
-    for (const auto& frequency : frequency_entry.frequencies) {
-      if (frequency.value >= 0) {
-        min_frequency = std::min(min_frequency, frequency.value);
+    for (const auto& candidate : frequency_entry.frequencies) {
+      if (candidate.value < 0) {
+        continue;
       }
+      frequency = frequency.has_value() ? std::optional<int>(descending ? std::max(*frequency, candidate.value)
+                                                                        : std::min(*frequency, candidate.value))
+                                        : std::optional<int>(candidate.value);
     }
-    return min_frequency;
   }
 
-  return INT_MAX;
+  return frequency;
 }
 }
 
-std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length) const {
+std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
+                                         const LookupOptions& options) const {
   std::map<std::pair<std::string, std::string>, LookupResult> result_map;
 
   size_t text_len = utf8::distance(lookup_string.begin(), lookup_string.end());
@@ -87,52 +91,86 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   }
 
   auto results = result_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
-  const auto freq_dict_order = query_.get_freq_dict_order();
-  auto middle_iter = std::ranges::next(results.begin(), max_results, results.end());
-  std::ranges::partial_sort(results, middle_iter, [&freq_dict_order](const auto& a, const auto& b) {
-    auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
-    auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
-    if (len_a != len_b) {
-      return len_a > len_b;
-    }
-
-    auto steps_a = a.preprocessor_steps;
-    auto steps_b = b.preprocessor_steps;
-    if (steps_a != steps_b) {
-      return steps_a < steps_b;
-    }
-
-    auto trace_len_a = a.trace.size();
-    auto trace_len_b = b.trace.size();
-    if (trace_len_a != trace_len_b) {
-      return trace_len_a < trace_len_b;
-    }
-
-    auto match_a = a.term.expression == a.deinflected;
-    auto match_b = b.term.expression == b.deinflected;
-    if (match_a != match_b) {
-      return match_a > match_b;
-    }
-
-    for (const auto& dict_name : freq_dict_order) {
-      const int freq_a = get_freq_value_for_dict(a.term, dict_name);
-      const int freq_b = get_freq_value_for_dict(b.term, dict_name);
-      if (freq_a != freq_b) {
-        return freq_a < freq_b;
+  std::vector<std::string> auto_frequency_dictionaries;
+  std::optional<std::string_view> frequency_dictionary;
+  bool frequency_descending = false;
+  switch (options.frequency_order) {
+    case LookupFrequencyOrder::Auto:
+      auto_frequency_dictionaries = query_.get_freq_dict_order();
+      break;
+    case LookupFrequencyOrder::Ascending:
+    case LookupFrequencyOrder::Descending:
+      if (options.frequency_dictionary.has_value()) {
+        const auto selected =
+            std::ranges::find(query_.freq_dicts_, *options.frequency_dictionary, &DictionaryQuery::Dictionary::name);
+        if (selected != query_.freq_dicts_.end()) {
+          frequency_dictionary = selected->name;
+          frequency_descending = options.frequency_order == LookupFrequencyOrder::Descending;
+        }
       }
-    }
+      break;
+    case LookupFrequencyOrder::Disabled:
+      break;
+  }
+  const size_t retained_count = std::min(results.size(), static_cast<size_t>(max_results));
+  auto middle_iter = std::ranges::next(results.begin(), static_cast<std::ptrdiff_t>(retained_count));
+  std::ranges::partial_sort(
+      results, middle_iter,
+      [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending](const auto& a, const auto& b) {
+        auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
+        auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
+        if (len_a != len_b) {
+          return len_a > len_b;
+        }
 
-    if (a.term.score != b.term.score) {
-      return a.term.score > b.term.score;
-    }
+        auto steps_a = a.preprocessor_steps;
+        auto steps_b = b.preprocessor_steps;
+        if (steps_a != steps_b) {
+          return steps_a < steps_b;
+        }
 
-    auto a_reading_expr_match = a.term.expression == a.term.reading;
-    auto b_reading_expr_match = b.term.expression == b.term.reading;
-    return a_reading_expr_match > b_reading_expr_match;
-  });
+        auto trace_len_a = a.trace.size();
+        auto trace_len_b = b.trace.size();
+        if (trace_len_a != trace_len_b) {
+          return trace_len_a < trace_len_b;
+        }
 
-  if (results.size() > static_cast<size_t>(max_results)) {
-    results.resize(max_results);
+        auto match_a = a.term.expression == a.deinflected;
+        auto match_b = b.term.expression == b.deinflected;
+        if (match_a != match_b) {
+          return match_a > match_b;
+        }
+
+        for (const auto& dictionary_name : auto_frequency_dictionaries) {
+          const int freq_a = get_freq_value_for_dict(a.term, dictionary_name, false).value_or(INT_MAX);
+          const int freq_b = get_freq_value_for_dict(b.term, dictionary_name, false).value_or(INT_MAX);
+          if (freq_a != freq_b) {
+            return freq_a < freq_b;
+          }
+        }
+
+        if (frequency_dictionary.has_value()) {
+          const auto freq_a = get_freq_value_for_dict(a.term, *frequency_dictionary, frequency_descending);
+          const auto freq_b = get_freq_value_for_dict(b.term, *frequency_dictionary, frequency_descending);
+          if (freq_a.has_value() != freq_b.has_value()) {
+            return freq_a.has_value();
+          }
+          if (freq_a.has_value() && *freq_a != *freq_b) {
+            return frequency_descending ? *freq_a > *freq_b : *freq_a < *freq_b;
+          }
+        }
+
+        if (a.term.score != b.term.score) {
+          return a.term.score > b.term.score;
+        }
+
+        auto a_reading_expr_match = a.term.expression == a.term.reading;
+        auto b_reading_expr_match = b.term.expression == b.term.reading;
+        return a_reading_expr_match > b_reading_expr_match;
+      });
+
+  if (results.size() > retained_count) {
+    results.resize(retained_count);
   }
 
   for (auto& r : results) {

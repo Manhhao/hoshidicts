@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string_view>
 
 #include "hoshidicts/deinflector.hpp"
 #include "hoshidicts/importer.hpp"
@@ -365,66 +368,116 @@ hd_lookup* hd_lookup_new(hd_query* q, hd_deinflector* d) {
 
 void hd_lookup_free(hd_lookup* l) { delete l; }
 
+static void marshal_lookup_results(hd_lookup_results* r) {
+  size_t trace_count = 0;
+  size_t glossaries_count = 0;
+  size_t freq_entry_count = 0;
+  size_t freq_count = 0;
+  size_t pitch_entry_count = 0;
+  size_t pitch_count = 0;
+  size_t transcription_count = 0;
+  for (const auto& lookup_result : r->res) {
+    trace_count += lookup_result.trace.size();
+    glossaries_count += lookup_result.term.glossaries.size();
+    freq_entry_count += lookup_result.term.frequencies.size();
+    pitch_entry_count += lookup_result.term.pitches.size();
+    for (const auto& freq_entry : lookup_result.term.frequencies) {
+      freq_count += freq_entry.frequencies.size();
+    }
+    for (const auto& pitch_entry : lookup_result.term.pitches) {
+      pitch_count += pitch_entry.pitches.size();
+      transcription_count += pitch_entry.transcriptions.size();
+    }
+  }
+  r->trace.reserve(trace_count);
+  r->glossary_entries.reserve(glossaries_count);
+  r->frequency_entries.reserve(freq_entry_count);
+  r->frequencies.reserve(freq_count);
+  r->pitch_entries.reserve(pitch_entry_count);
+  r->pitches.reserve(pitch_count);
+  r->transcriptions.reserve(transcription_count);
+
+  for (const auto& lookup_result : r->res) {
+    const auto& term_result = lookup_result.term;
+    hd_lookup_result lr;
+    lr.matched = hd_str{lookup_result.matched.c_str(), lookup_result.matched.size()};
+    lr.deinflected = hd_str{lookup_result.deinflected.c_str(), lookup_result.deinflected.size()};
+    lr.preprocessor_steps = lookup_result.preprocessor_steps;
+
+    size_t trace_start = r->trace.size();
+    for (const auto& group : lookup_result.trace) {
+      r->trace.push_back(hd_transform_group{hd_str{group.name.c_str(), group.name.size()},
+                                            hd_str{group.description.c_str(), group.description.size()}});
+    }
+    lr.trace = r->trace.data() + trace_start;
+    lr.trace_count = lookup_result.trace.size();
+
+    lr.term.expression = hd_str{term_result.expression.c_str(), term_result.expression.size()};
+    lr.term.reading = hd_str{term_result.reading.c_str(), term_result.reading.size()};
+    lr.term.rules = hd_str{term_result.rules.c_str(), term_result.rules.size()};
+    lr.term.score = term_result.score;
+
+    build_glossaries(r->glossary_entries, term_result, lr.term);
+    build_frequencies(r->frequency_entries, r->frequencies, term_result, lr.term);
+    build_pitches(r->pitch_entries, r->pitches, r->transcriptions, term_result, lr.term);
+
+    r->results.push_back(lr);
+  }
+}
+
 hd_lookup_results* hd_lookup_run(const hd_lookup* l, const char* lookup_string, int max_results, size_t scan_length,
                                  const hd_lookup_result** out_results, size_t* out_count) {
   try {
     auto r = std::make_unique<hd_lookup_results>();
     r->res = l->lookup.lookup(lookup_string, max_results, scan_length);
+    marshal_lookup_results(r.get());
 
-    size_t trace_count = 0;
-    size_t glossaries_count = 0;
-    size_t freq_entry_count = 0;
-    size_t freq_count = 0;
-    size_t pitch_entry_count = 0;
-    size_t pitch_count = 0;
-    size_t transcription_count = 0;
-    for (const auto& lookup_result : r->res) {
-      trace_count += lookup_result.trace.size();
-      glossaries_count += lookup_result.term.glossaries.size();
-      freq_entry_count += lookup_result.term.frequencies.size();
-      pitch_entry_count += lookup_result.term.pitches.size();
-      for (const auto& freq_entry : lookup_result.term.frequencies) {
-        freq_count += freq_entry.frequencies.size();
-      }
-      for (const auto& pitch_entry : lookup_result.term.pitches) {
-        pitch_count += pitch_entry.pitches.size();
-        transcription_count += pitch_entry.transcriptions.size();
+    *out_results = r->results.data();
+    *out_count = r->results.size();
+    return r.release();
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+static std::optional<std::string_view> optional_string_view(hd_str value) {
+  if (value.len == 0) {
+    return std::nullopt;
+  }
+  if (value.ptr == nullptr) {
+    throw std::invalid_argument("non-empty lookup option has a null pointer");
+  }
+  return std::string_view(value.ptr, value.len);
+}
+
+hd_lookup_results* hd_lookup_run_with_options(const hd_lookup* l, const char* lookup_string, int max_results,
+                                              size_t scan_length, const hd_lookup_options* options,
+                                              const hd_lookup_result** out_results, size_t* out_count) {
+  try {
+    LookupOptions native_options;
+    if (options != nullptr) {
+      native_options.frequency_dictionary = optional_string_view(options->frequency_dictionary);
+      switch (options->frequency_order) {
+        case HD_LOOKUP_FREQUENCY_ORDER_AUTO:
+          native_options.frequency_order = LookupFrequencyOrder::Auto;
+          break;
+        case HD_LOOKUP_FREQUENCY_ORDER_ASCENDING:
+          native_options.frequency_order = LookupFrequencyOrder::Ascending;
+          break;
+        case HD_LOOKUP_FREQUENCY_ORDER_DESCENDING:
+          native_options.frequency_order = LookupFrequencyOrder::Descending;
+          break;
+        case HD_LOOKUP_FREQUENCY_ORDER_DISABLED:
+          native_options.frequency_order = LookupFrequencyOrder::Disabled;
+          break;
+        default:
+          return nullptr;
       }
     }
-    r->trace.reserve(trace_count);
-    r->glossary_entries.reserve(glossaries_count);
-    r->frequency_entries.reserve(freq_entry_count);
-    r->frequencies.reserve(freq_count);
-    r->pitch_entries.reserve(pitch_entry_count);
-    r->pitches.reserve(pitch_count);
-    r->transcriptions.reserve(transcription_count);
 
-    for (const auto& lookup_result : r->res) {
-      const auto& term_result = lookup_result.term;
-      hd_lookup_result lr;
-      lr.matched = hd_str{lookup_result.matched.c_str(), lookup_result.matched.size()};
-      lr.deinflected = hd_str{lookup_result.deinflected.c_str(), lookup_result.deinflected.size()};
-      lr.preprocessor_steps = lookup_result.preprocessor_steps;
-
-      size_t trace_start = r->trace.size();
-      for (const auto& group : lookup_result.trace) {
-        r->trace.push_back(hd_transform_group{hd_str{group.name.c_str(), group.name.size()},
-                                              hd_str{group.description.c_str(), group.description.size()}});
-      }
-      lr.trace = r->trace.data() + trace_start;
-      lr.trace_count = lookup_result.trace.size();
-
-      lr.term.expression = hd_str{term_result.expression.c_str(), term_result.expression.size()};
-      lr.term.reading = hd_str{term_result.reading.c_str(), term_result.reading.size()};
-      lr.term.rules = hd_str{term_result.rules.c_str(), term_result.rules.size()};
-      lr.term.score = term_result.score;
-
-      build_glossaries(r->glossary_entries, term_result, lr.term);
-      build_frequencies(r->frequency_entries, r->frequencies, term_result, lr.term);
-      build_pitches(r->pitch_entries, r->pitches, r->transcriptions, term_result, lr.term);
-
-      r->results.push_back(lr);
-    }
+    auto r = std::make_unique<hd_lookup_results>();
+    r->res = l->lookup.lookup(lookup_string, max_results, scan_length, native_options);
+    marshal_lookup_results(r.get());
 
     *out_results = r->results.data();
     *out_count = r->results.size();

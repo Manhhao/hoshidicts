@@ -155,11 +155,26 @@ typedef struct hd_lookup_result {
   int32_t preprocessor_steps;
 } hd_lookup_result;
 
+typedef enum hd_lookup_frequency_order {
+  HD_LOOKUP_FREQUENCY_ORDER_AUTO = 0,
+  HD_LOOKUP_FREQUENCY_ORDER_ASCENDING = 1,
+  HD_LOOKUP_FREQUENCY_ORDER_DESCENDING = 2,
+  HD_LOOKUP_FREQUENCY_ORDER_DISABLED = 3,
+} hd_lookup_frequency_order;
+
+typedef struct hd_lookup_options {
+  hd_str frequency_dictionary;
+  int32_t frequency_order;
+} hd_lookup_options;
+
 hd_lookup* hd_lookup_new(hd_query* q, hd_deinflector* d);
 void hd_lookup_free(hd_lookup* l);
 
 hd_lookup_results* hd_lookup_run(const hd_lookup* l, const char* lookup_string, int max_results, size_t scan_length,
                                  const hd_lookup_result** out_results, size_t* out_count);
+hd_lookup_results* hd_lookup_run_with_options(const hd_lookup* l, const char* lookup_string, int max_results,
+                                              size_t scan_length, const hd_lookup_options* options,
+                                              const hd_lookup_result** out_results, size_t* out_count);
 void hd_lookup_results_free(hd_lookup_results* r);
 
 #ifdef __cplusplus
