@@ -4,14 +4,11 @@
 #include <zstd.h>
 
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <ranges>
 #include <string_view>
@@ -124,16 +121,6 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
   dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
     return;
-  }
-
-  if (type == FREQ && freq_dicts_.empty()) {
-    if (summary.frequencyMode == "occurrence-based") {
-      primary_frequency_mode_ = FrequencyMode::Occurrence;
-    } else if (summary.frequencyMode == "rank-based") {
-      primary_frequency_mode_ = FrequencyMode::Rank;
-    } else {
-      primary_frequency_mode_ = infer_frequency_mode(*dict.data, summary.sourceLanguage);
-    }
   }
 
   dict.data->media = memory::map_rd(path / "media.bin");
@@ -275,123 +262,52 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [name, styles, data] : freq_dicts_) {
-      auto frequencies = query_frequencies(*data, term.expression, term.reading);
+      uint64_t offset_addr = data->table(term.expression);
+      if (offset_addr == 0) {
+        continue;
+      }
+      const uint8_t* index_addr = data->blobs.data + offset_addr;
+      auto count = read_val<uint32_t>(index_addr);
+
+      std::vector<Frequency> frequencies;
+      for (uint32_t i = 0; i < count; i++) {
+        auto offset = read_val<uint64_t>(index_addr);
+        const uint8_t* blob_addr = data->blobs.data + offset;
+
+        auto type = read_val<uint8_t>(blob_addr);
+        if (type != 1) {
+          continue;
+        }
+
+        auto expr_len = read_val<uint16_t>(blob_addr);
+        std::string_view expr = read_str(blob_addr, expr_len);
+        if (expr != term.expression) {
+          continue;
+        }
+
+        auto mode_len = read_val<uint8_t>(blob_addr);
+        std::string_view mode = read_str(blob_addr, mode_len);
+        if (mode != "freq") {
+          continue;
+        }
+
+        auto freq_data_size = read_val<uint32_t>(blob_addr);
+        std::string_view freq_data = read_str(blob_addr, freq_data_size);
+
+        ParsedFrequency parsed;
+        if (yomitan_parser::parse_frequency(freq_data, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != term.reading) {
+            continue;
+          }
+          frequencies.emplace_back(
+              Frequency{.value = parsed.value, .display_value = std::string(parsed.display_value)});
+        }
+      }
       if (!frequencies.empty()) {
         term.frequencies.emplace_back(FrequencyEntry{.dict_name = name, .frequencies = std::move(frequencies)});
       }
     }
   }
-}
-
-std::vector<Frequency> DictionaryQuery::query_frequencies(const DictionaryData& data, const std::string& expression,
-                                                          std::optional<std::string_view> reading) {
-  uint64_t offset_addr = data.table(expression);
-  if (offset_addr == 0) {
-    return {};
-  }
-  const uint8_t* index_addr = data.blobs.data + offset_addr;
-  auto count = read_val<uint32_t>(index_addr);
-
-  std::vector<Frequency> frequencies;
-  for (uint32_t i = 0; i < count; i++) {
-    auto offset = read_val<uint64_t>(index_addr);
-    const uint8_t* blob_addr = data.blobs.data + offset;
-
-    auto type = read_val<uint8_t>(blob_addr);
-    if (type != 1) {
-      continue;
-    }
-
-    auto expr_len = read_val<uint16_t>(blob_addr);
-    std::string_view expr = read_str(blob_addr, expr_len);
-    if (expr != expression) {
-      continue;
-    }
-
-    auto mode_len = read_val<uint8_t>(blob_addr);
-    std::string_view mode = read_str(blob_addr, mode_len);
-    if (mode != "freq") {
-      continue;
-    }
-
-    auto freq_data_size = read_val<uint32_t>(blob_addr);
-    std::string_view freq_data = read_str(blob_addr, freq_data_size);
-
-    ParsedFrequency parsed;
-    if (!yomitan_parser::parse_frequency(freq_data, parsed)) {
-      continue;
-    }
-    if (reading.has_value() && !parsed.reading.empty() && parsed.reading != *reading) {
-      continue;
-    }
-
-    Frequency frequency{.value = parsed.value, .display_value = std::move(parsed.display_value)};
-    const bool duplicate = std::ranges::any_of(frequencies, [&](const Frequency& existing) {
-      return existing.value == frequency.value && existing.display_value == frequency.display_value;
-    });
-    if (!duplicate) {
-      frequencies.push_back(std::move(frequency));
-    }
-  }
-  return frequencies;
-}
-
-DictionaryQuery::FrequencyMode DictionaryQuery::infer_frequency_mode(
-    const DictionaryData& data, const std::optional<std::string>& source_language) {
-  if (source_language.has_value() && !source_language->empty()) {
-    std::string normalized_language = *source_language;
-    std::ranges::transform(normalized_language, normalized_language.begin(),
-                           [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
-    if (normalized_language != "ja") {
-      return FrequencyMode::Rank;
-    }
-  }
-
-  static constexpr std::array<std::string_view, 10> more_common_terms = {
-      "来る", "言う", "出る", "入る", "方", "男", "女", "今", "何", "時",
-  };
-  static constexpr std::array<std::string_view, 10> less_common_terms = {
-      "行なう", "論じる", "過す", "行方", "人口", "猫", "犬", "滝", "理", "暁",
-  };
-
-  struct Details {
-    bool has_value = false;
-    int min_value = std::numeric_limits<int>::max();
-    int max_value = std::numeric_limits<int>::min();
-  };
-
-  auto get_details = [&](std::string_view term) {
-    Details details;
-    for (const auto& frequency : query_frequencies(data, std::string(term), std::nullopt)) {
-      details.has_value = true;
-      details.min_value = std::min(details.min_value, frequency.value);
-      details.max_value = std::max(details.max_value, frequency.value);
-    }
-    return details;
-  };
-
-  std::array<Details, more_common_terms.size()> common_details;
-  std::array<Details, less_common_terms.size()> rare_details;
-  std::ranges::transform(more_common_terms, common_details.begin(), get_details);
-  std::ranges::transform(less_common_terms, rare_details.begin(), get_details);
-
-  int result = 0;
-  // Widened so the differences below cannot overflow at the int extremes.
-  auto sign = [](long long value) { return (value > 0) - (value < 0); };
-  for (const auto& common : common_details) {
-    if (!common.has_value) {
-      continue;
-    }
-    for (const auto& rare : rare_details) {
-      if (!rare.has_value) {
-        continue;
-      }
-      result += sign(static_cast<long long>(common.max_value) - rare.min_value) +
-                sign(static_cast<long long>(common.min_value) - rare.max_value);
-    }
-  }
-
-  return result > 0 ? FrequencyMode::Occurrence : FrequencyMode::Rank;
 }
 
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {

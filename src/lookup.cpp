@@ -3,6 +3,7 @@
 #include <utf8.h>
 
 #include <algorithm>
+#include <climits>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -29,8 +30,12 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
     }
 
     for (const auto& candidate : frequency_entry.frequencies) {
+      // -1 means that this entry must not participate in frequency ranking.
+      if (candidate.value < 0) {
+        continue;
+      }
       frequency = frequency.has_value() ? std::optional<int>(descending ? std::max(*frequency, candidate.value)
-                                                                       : std::min(*frequency, candidate.value))
+                                                                        : std::min(*frequency, candidate.value))
                                         : std::optional<int>(candidate.value);
     }
   }
@@ -91,16 +96,14 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   }
 
   auto results = result_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
+  std::vector<std::string> auto_frequency_dictionaries;
   std::optional<std::string_view> frequency_dictionary;
   bool frequency_descending = false;
   switch (options.frequency_order) {
     case LookupFrequencyOrder::Auto:
-      // Preserves the previous behaviour: order by the first frequency
-      // dictionary that was added, in the direction its mode implies.
-      if (!query_.freq_dicts_.empty()) {
-        frequency_dictionary = query_.freq_dicts_.front().name;
-        frequency_descending = query_.primary_frequency_mode_ == DictionaryQuery::FrequencyMode::Occurrence;
-      }
+      // Preserve the original comparator: each loaded frequency dictionary
+      // is an ascending tie-breaker, in insertion order.
+      auto_frequency_dictionaries = query_.get_freq_dict_order();
       break;
     case LookupFrequencyOrder::Ascending:
     case LookupFrequencyOrder::Descending:
@@ -118,25 +121,11 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     case LookupFrequencyOrder::Disabled:
       break;
   }
-  const std::optional<std::string_view> primary_reading =
-      options.primary_reading.has_value() && !options.primary_reading->empty() ? options.primary_reading : std::nullopt;
   const size_t retained_count = std::min(results.size(), static_cast<size_t>(max_results));
   auto middle_iter = std::ranges::next(results.begin(), static_cast<std::ptrdiff_t>(retained_count));
   std::ranges::partial_sort(
       results, middle_iter,
-      [primary_reading, frequency_dictionary, frequency_descending](const auto& a, const auto& b) {
-        if (primary_reading.has_value()) {
-          const std::string_view reading_a =
-              a.term.reading.empty() ? std::string_view(a.term.expression) : a.term.reading;
-          const std::string_view reading_b =
-              b.term.reading.empty() ? std::string_view(b.term.expression) : b.term.reading;
-          const bool primary_a = reading_a == *primary_reading;
-          const bool primary_b = reading_b == *primary_reading;
-          if (primary_a != primary_b) {
-            return primary_a;
-          }
-        }
-
+      [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending](const auto& a, const auto& b) {
         auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
         auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
         if (len_a != len_b) {
@@ -159,6 +148,14 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
         auto match_b = b.term.expression == b.deinflected;
         if (match_a != match_b) {
           return match_a > match_b;
+        }
+
+        for (const auto& dictionary_name : auto_frequency_dictionaries) {
+          const int freq_a = get_freq_value_for_dict(a.term, dictionary_name, false).value_or(INT_MAX);
+          const int freq_b = get_freq_value_for_dict(b.term, dictionary_name, false).value_or(INT_MAX);
+          if (freq_a != freq_b) {
+            return freq_a < freq_b;
+          }
         }
 
         if (frequency_dictionary.has_value()) {

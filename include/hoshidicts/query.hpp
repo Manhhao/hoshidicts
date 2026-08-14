@@ -1,11 +1,10 @@
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <unordered_map>
 
 #if defined(__clang__) && defined(__APPLE__)
 #define SWIFT_IMPORT_UNSAFE __attribute__((swift_attr("import_unsafe")))
@@ -113,7 +112,6 @@ class DictionaryQuery {
   void materialize(TermResult& term) const;
 
   struct DictionaryData;
-  enum class FrequencyMode { Rank, Occurrence };
   struct Dictionary {
     Dictionary();
     ~Dictionary();
@@ -131,13 +129,8 @@ class DictionaryQuery {
   enum DictionaryType : uint8_t { TERM, FREQ, PITCH, KANJI };
 
   void add_dict(const std::string& path, DictionaryType);
-  static std::vector<Frequency> query_frequencies(const DictionaryData& data, const std::string& expression,
-                                                  std::optional<std::string_view> reading);
-  static FrequencyMode infer_frequency_mode(const DictionaryData& data,
-                                            const std::optional<std::string>& source_language);
 
   static std::string decompress_glossary(const void* data, size_t size);
-  FrequencyMode primary_frequency_mode_ = FrequencyMode::Rank;
   std::vector<Dictionary> term_dicts_;
   std::vector<Dictionary> freq_dicts_;
   std::vector<Dictionary> pitch_dicts_;

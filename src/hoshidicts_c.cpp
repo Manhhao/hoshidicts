@@ -455,17 +455,9 @@ static std::optional<std::string_view> optional_string_view(hd_str value) {
 hd_lookup_results* hd_lookup_run_with_options(const hd_lookup* l, const char* lookup_string, int max_results,
                                               size_t scan_length, const hd_lookup_options* options,
                                               const hd_lookup_result** out_results, size_t* out_count) {
-  if (l == nullptr || lookup_string == nullptr || out_results == nullptr || out_count == nullptr || max_results <= 0 ||
-      scan_length == 0) {
-    return nullptr;
-  }
-  *out_results = nullptr;
-  *out_count = 0;
-
   try {
     LookupOptions native_options;
     if (options != nullptr) {
-      native_options.primary_reading = optional_string_view(options->primary_reading);
       native_options.frequency_dictionary = optional_string_view(options->frequency_dictionary);
       switch (options->frequency_order) {
         case HD_LOOKUP_FREQUENCY_ORDER_AUTO:
