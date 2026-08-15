@@ -2,6 +2,8 @@
 
 #include <ankerl/unordered_dense.h>
 #include <xxh3.h>
+#define ZDICT_STATIC_LINKING_ONLY
+#include <zdict.h>
 #include <zstd.h>
 
 #include <algorithm>
@@ -173,7 +175,53 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
   }
 }
 
-ProcessedFile process_term_bank(const std::string& content) {
+std::vector<char> train_zstd_dict(const Zip& zip, const Files& files, bool low_ram) {
+  if (files.term_banks.empty()) {
+    return {};
+  }
+
+  const std::string content = zip.read(files.term_banks[0]);
+  std::vector<Term> terms;
+  if (!yomitan_parser::parse_term_bank(content, terms)) {
+    return {};
+  }
+
+  size_t bank_bytes = 0;
+  for (const auto& term : terms) {
+    bank_bytes += term.glossary.str.size();
+  }
+
+  std::vector<char> samples;
+  std::vector<size_t> sizes;
+  constexpr size_t max_sample_bytes = 2L * 1024 * 1024;
+  const size_t step = std::max<size_t>(1, bank_bytes / max_sample_bytes);
+  for (size_t i = 0; i < terms.size() && samples.size() < max_sample_bytes; i += step) {
+    write_str(samples, terms[i].glossary.str);
+    sizes.push_back(terms[i].glossary.str.size());
+  }
+
+  if (sizes.size() < 8) {
+    return {};
+  }
+
+  ZDICT_fastCover_params_t params = {};
+  params.d = 8;
+  params.steps = 4;
+  params.splitPoint = 1.0;
+  params.nbThreads = low_ram ? 1 : std::max<unsigned int>(1, std::thread::hardware_concurrency());
+
+  std::vector<char> dict(static_cast<size_t>(110 * 1024));
+  const size_t dict_size = ZDICT_optimizeTrainFromBuffer_fastCover(
+      dict.data(), dict.size(), samples.data(), sizes.data(), static_cast<unsigned>(sizes.size()), &params);
+  if (ZDICT_isError(dict_size)) {
+    return {};
+  }
+
+  dict.resize(dict_size);
+  return dict;
+}
+
+ProcessedFile process_term_bank(const std::string& content, const ZSTD_CDict* cdict) {
   ProcessedFile processed;
   if (content.empty()) {
     return processed;
@@ -189,6 +237,7 @@ ProcessedFile process_term_bank(const std::string& content) {
   if (!cctx) {
     return processed;
   }
+  ZSTD_CCtx_refCDict(cctx, cdict);
 
   for (auto& term : out) {
     const std::string_view glossary = term.glossary.str;
@@ -197,8 +246,7 @@ ProcessedFile process_term_bank(const std::string& content) {
     if (it == processed.glossaries.end()) {
       const size_t bound = ZSTD_compressBound(glossary.size());
       compressed.resize(bound);
-      const size_t compressed_size =
-          ZSTD_compressCCtx(cctx, compressed.data(), bound, glossary.data(), glossary.size(), 0);
+      const size_t compressed_size = ZSTD_compress2(cctx, compressed.data(), bound, glossary.data(), glossary.size());
       if (ZSTD_isError(compressed_size)) {
         ZSTD_freeCCtx(cctx);
         throw std::runtime_error("failed to compress glossary");
@@ -410,7 +458,8 @@ Summary create_summary(const Index& index, std::string styles) {
 }
 
 void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
-                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
+                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram,
+                 const ZSTD_CDict* cdict) {
   if (files.empty()) {
     return;
   }
@@ -453,8 +502,8 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
   };
 
   for (int file_index : files) {
-    threads.push_back(
-        std::async(std::launch::async, [&zip, file_index]() { return process_term_bank(zip.read(file_index)); }));
+    threads.push_back(std::async(
+        std::launch::async, [&zip, file_index, cdict]() { return process_term_bank(zip.read(file_index), cdict); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -658,11 +707,21 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     std::future<size_t> media_thread = std::async(
         std::launch::async, [&dict_path, &zip, &files]() { return write_media(dict_path, zip, files.media_files); });
 
+    const std::vector<char> zstd_dict = train_zstd_dict(zip, files, low_ram);
+    std::unique_ptr<ZSTD_CDict, decltype(&ZSTD_freeCDict)> cdict(nullptr, ZSTD_freeCDict);
+    if (!zstd_dict.empty()) {
+      cdict.reset(ZSTD_createCDict(zstd_dict.data(), zstd_dict.size(), 0));
+
+      std::ofstream dict_file(dict_path / "dict.zstd", std::ios::binary);
+      setup_stream_exceptions(dict_file);
+      dict_file.write(zstd_dict.data(), static_cast<std::streamsize>(zstd_dict.size()));
+    }
+
     std::ofstream blobs(dict_path / "blobs.bin", std::ios::binary);
     setup_stream_exceptions(blobs);
     std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
-    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
+    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram, cdict.get());
     write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
     write_kanji(blobs, offsets, zip, files.kanji_banks, write_offset, result, low_ram);
     count_unprocessed_banks(zip, files, result);
@@ -694,7 +753,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     setup_stream_exceptions(index_file);
     index_file.write(summary_json.data(), static_cast<std::streamsize>(summary_json.size()));
 
-    std::ofstream sui(dict_path / ".hoshidicts_3", std::ios::binary);
+    std::ofstream sui(dict_path / (zstd_dict.empty() ? ".hoshidicts_3" : ".hoshidicts_4"), std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;
