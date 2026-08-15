@@ -9,7 +9,6 @@
 #include <ranges>
 #include <sstream>
 
-#include "reading/reading.hpp"
 #include "text_processor/text_processor.hpp"
 
 namespace {
@@ -41,6 +40,10 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
   }
 
   return frequency;
+}
+
+bool matches_primary_reading(const TermResult& term, std::string_view primary_reading) {
+  return term.reading == primary_reading;
 }
 }
 
@@ -113,20 +116,19 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     case LookupFrequencyOrder::Disabled:
       break;
   }
-  // An empty preference is no preference, as in Yomitan.
-  const std::optional<std::string_view> primary_reading =
-      options.primary_reading.has_value() && !options.primary_reading->empty() ? options.primary_reading : std::nullopt;
+  std::string_view primary_reading;
+  if (options.primary_reading.has_value()) {
+    primary_reading = *options.primary_reading;
+  }
   const size_t retained_count = std::min(results.size(), static_cast<size_t>(max_results));
   auto middle_iter = std::ranges::next(results.begin(), static_cast<std::ptrdiff_t>(retained_count));
   std::ranges::partial_sort(
       results, middle_iter,
       [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending, primary_reading](const auto& a,
                                                                                                   const auto& b) {
-        // Yomitan ranks a reading the caller asked for above every other
-        // criterion, the longest match included.
-        if (primary_reading.has_value()) {
-          const bool primary_a = reading::matches_primary(a.term, *primary_reading);
-          const bool primary_b = reading::matches_primary(b.term, *primary_reading);
+        if (!primary_reading.empty()) {
+          const bool primary_a = matches_primary_reading(a.term, primary_reading);
+          const bool primary_b = matches_primary_reading(b.term, primary_reading);
           if (primary_a != primary_b) {
             return primary_a;
           }
