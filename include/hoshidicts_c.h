@@ -165,6 +165,7 @@ typedef enum hd_lookup_frequency_order {
 typedef struct hd_lookup_options {
   hd_str frequency_dictionary;
   int32_t frequency_order;
+  hd_str primary_reading;
 } hd_lookup_options;
 
 hd_lookup* hd_lookup_new(hd_query* q, hd_deinflector* d);

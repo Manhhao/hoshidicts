@@ -41,6 +41,10 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
 
   return frequency;
 }
+
+bool matches_primary_reading(const TermResult& term, std::string_view primary_reading) {
+  return term.reading == primary_reading;
+}
 }
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
@@ -112,11 +116,24 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     case LookupFrequencyOrder::Disabled:
       break;
   }
+  std::string_view primary_reading;
+  if (options.primary_reading.has_value()) {
+    primary_reading = *options.primary_reading;
+  }
   const size_t retained_count = std::min(results.size(), static_cast<size_t>(max_results));
   auto middle_iter = std::ranges::next(results.begin(), static_cast<std::ptrdiff_t>(retained_count));
   std::ranges::partial_sort(
       results, middle_iter,
-      [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending](const auto& a, const auto& b) {
+      [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending, primary_reading](const auto& a,
+                                                                                                  const auto& b) {
+        if (!primary_reading.empty()) {
+          const bool primary_a = matches_primary_reading(a.term, primary_reading);
+          const bool primary_b = matches_primary_reading(b.term, primary_reading);
+          if (primary_a != primary_b) {
+            return primary_a;
+          }
+        }
+
         auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
         auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
         if (len_a != len_b) {

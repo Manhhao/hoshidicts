@@ -457,6 +457,7 @@ hd_lookup_results* hd_lookup_run_with_options(const hd_lookup* l, const char* lo
     LookupOptions native_options;
     if (options != nullptr) {
       native_options.frequency_dictionary = optional_string_view(options->frequency_dictionary);
+      native_options.primary_reading = optional_string_view(options->primary_reading);
       switch (options->frequency_order) {
         case HD_LOOKUP_FREQUENCY_ORDER_AUTO:
           native_options.frequency_order = LookupFrequencyOrder::Auto;
