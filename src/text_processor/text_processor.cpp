@@ -30,6 +30,8 @@ constexpr uint32_t KANA_PROLONGED_SOUND_MARK = 0x30fc;
 constexpr uint32_t HIRAGANA_SMALL_TSU = 0x3063;
 constexpr uint32_t KATAKANA_SMALL_TSU = 0x30c3;
 
+constexpr char32_t KATAKANA_MIDDLE_DOT = 0x30fb;
+
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_START = 0x3041;
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_END = 0x3096;
 
@@ -273,6 +275,16 @@ std::u32string numbers_to_kanji(const std::u32string& text) {
   return result;
 }
 
+std::u32string strip_middle_dots(const std::u32string& text) {
+  std::u32string result;
+  for (char32_t c : text) {
+    if (c != KATAKANA_MIDDLE_DOT) {
+      result += c;
+    }
+  }
+  return result;
+}
+
 // TODO: implement rest of preprocessors
 std::vector<TextProcessor> get_japanese_processors() {
   return {
@@ -313,8 +325,12 @@ std::vector<TextProcessor> get_japanese_processors() {
        .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? expand_iteration_marks(text) : text;
        }},
-      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
          return opt == 1 ? numbers_to_kanji(text) : text;
+       }},
+      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? strip_middle_dots(text) : text;
        }}};
 }
 }
