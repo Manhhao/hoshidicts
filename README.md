@@ -12,11 +12,22 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 ```
 Imports a Yomitan `.zip` dictionary file into a custom format. The resulting folder is stored in `output_dir/<dict_title>`. Glossaries are compressed using zstd. Term, frequency and pitch dictionaries are generally supported, but only a small part of the pitch accent spec was implemented. Setting `low_ram` to `true` can reduce memory usage significantly at the cost of slightly lower import speed.
 
+### container
+```cpp
+PackResult dictionary_container::pack(const std::string& dictionary_dir_utf8, const std::string& output_path_utf8)
+```
+Packs an imported dictionary directory into a single `.hoshi` file. The payload files are copied byte for byte behind a header and a section table, so the container is queried by mapping it, with no extraction step. Memory use is constant in the size of the dictionary. See [Container format](#container-format) for the byte layout.
+
+```cpp
+VerifyResult dictionary_container::verify(const std::string& path_utf8)
+```
+Checks a container against the XXH3-64 checksum of every section and reports its payload version. Intended for a build pipeline or a one-time check after a download; loading a container does not hash it.
+
 ### query
 ```cpp
 void DictionaryQuery::add_term_dict(const std::string& path)
 ```
-Adds an imported term dictionary to the query.
+Adds an imported term dictionary to the query. `path` is either the directory an import produced or a `.hoshi` container; containers are recognised by their magic bytes.
 
 ```cpp
 void DictionaryQuery::add_freq_dict(const std::string& path)
