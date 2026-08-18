@@ -132,8 +132,11 @@ class DictionaryQuery {
   enum DictionaryType : uint8_t { TERM, FREQ, PITCH, KANJI };
 
   void add_dict(const std::string& path, DictionaryType);
+  void add_dict_(const std::string& path, DictionaryType);
 
   static std::string decompress_glossary(const void* data, size_t size, const ZSTD_DDict_s* dict);
+  static bool load_directory(const std::string& path_utf8, Dictionary& dict);
+  static bool load_container(const std::string& path_utf8, Dictionary& dict);
   std::vector<Dictionary> term_dicts_;
   std::vector<Dictionary> freq_dicts_;
   std::vector<Dictionary> pitch_dicts_;
