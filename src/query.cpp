@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "hash/hash.hpp"
+#include "hoshidicts/container.hpp"
 #include "hoshidicts/importer.hpp"
 #include "json/yomitan_parser.hpp"
 #include "memory/memory.hpp"
@@ -45,6 +46,9 @@ struct DictionaryQuery::DictionaryData {
   int version;
   hash::linear table;
   hash::bloom bloom;
+  // owns every mapping, one per payload file
+  std::vector<memory::mapped_file> mappings;
+  // windows into mappings rather than mappings of their own
   memory::mapped_file blobs;
   memory::mapped_file hash_table;
   memory::mapped_file bloom_filter;
@@ -52,12 +56,12 @@ struct DictionaryQuery::DictionaryData {
   memory::mapped_file media_index;
   ZSTD_DDict* zstd_dict = nullptr;
 
+  memory::mapped_file map(const std::filesystem::path& path) { return mappings.emplace_back(memory::map_rd(path)); }
+
   ~DictionaryData() {
-    memory::unmap(blobs);
-    memory::unmap(hash_table);
-    memory::unmap(bloom_filter);
-    memory::unmap(media);
-    memory::unmap(media_index);
+    for (const memory::mapped_file& mapping : mappings) {
+      memory::unmap(mapping);
+    }
     ZSTD_freeDDict(zstd_dict);
   }
 };
@@ -74,7 +78,7 @@ DictionaryQuery::Dictionary::~Dictionary() = default;
 DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
-void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
+bool DictionaryQuery::load_directory(const std::string& path_utf8, Dictionary& dict) {
   const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   int version = 0;
   if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
@@ -86,18 +90,17 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_1")) {
     version = 1;
   } else {
-    return;
+    return false;
   }
 
-  Dictionary dict;
-  Summary summary;
   std::ifstream index_file(path / "index.json", std::ios::binary);
   if (!index_file) {
-    return;
+    return false;
   }
-  std::string buf(std::istreambuf_iterator<char>(index_file), {});
+  const std::string buf(std::istreambuf_iterator<char>(index_file), {});
+  Summary summary;
   if (glz::read<glz::opts{.error_on_unknown_keys = false}>(summary, buf)) {
-    return;
+    return false;
   }
 
   dict.name = summary.title.empty() ? path_utils::to_utf8(path.stem()) : summary.title;
@@ -107,40 +110,96 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
     dict.styles = std::string(std::istreambuf_iterator<char>(f), {});
   }
 
-  dict.data = std::make_unique<DictionaryData>();
   dict.data->version = version;
-
-  dict.data->hash_table = memory::map_rd(path / "hash.table");
-  if (!dict.data->hash_table) {
-    return;
-  }
-  if (!dict.data->table.load(dict.data->hash_table.data, dict.data->hash_table.size)) {
-    return;
-  }
-
-  dict.data->bloom_filter = memory::map_rd(path / "bloom.filter");
-  if (!dict.data->bloom_filter) {
-    return;
-  }
-  if (!dict.data->bloom.load(dict.data->bloom_filter.data, dict.data->bloom_filter.size)) {
-    return;
-  }
-  dict.data->table.set_bloom(&dict.data->bloom);
-
-  dict.data->blobs = memory::map_rd(path / "blobs.bin");
-  if (!dict.data->blobs) {
-    return;
-  }
-
-  dict.data->media = memory::map_rd(path / "media.bin");
+  dict.data->hash_table = dict.data->map(path / "hash.table");
+  dict.data->bloom_filter = dict.data->map(path / "bloom.filter");
+  dict.data->blobs = dict.data->map(path / "blobs.bin");
+  dict.data->media = dict.data->map(path / "media.bin");
   if (dict.data->media) {
-    dict.data->media_index = memory::map_rd(path / "media.idx");
+    dict.data->media_index = dict.data->map(path / "media.idx");
   }
 
   if (version >= 4) {
     std::ifstream f(path / "dict.zstd", std::ios::binary);
     const std::string blob(std::istreambuf_iterator<char>(f), {});
     dict.data->zstd_dict = ZSTD_createDDict(blob.data(), blob.size());
+  }
+
+  return true;
+}
+
+bool DictionaryQuery::load_container(const std::string& path_utf8, Dictionary& dict) {
+  const dictionary_container::OpenResult opened = dictionary_container::open(path_utf8);
+  if (!opened.ok) {
+    return false;
+  }
+
+  const std::filesystem::path path = path_utils::from_utf8(path_utf8);
+  const memory::mapped_file file = dict.data->map(path);
+  if (!file || file.size != opened.container.size) {
+    return false;
+  }
+  dict.data->version = static_cast<int>(opened.container.payload_version);
+
+  std::string_view index;
+  for (const dictionary_container::Section& section : opened.container.sections) {
+    const memory::mapped_file view{.data = file.data + section.offset, .size = section.length};
+    switch (section.type) {
+      case dictionary_container::INDEX:
+        index = std::string_view(reinterpret_cast<const char*>(view.data), view.size);
+        break;
+      case dictionary_container::BLOBS:
+        dict.data->blobs = view;
+        break;
+      case dictionary_container::HASH_TABLE:
+        dict.data->hash_table = view;
+        break;
+      case dictionary_container::BLOOM_FILTER:
+        dict.data->bloom_filter = view;
+        break;
+      case dictionary_container::ZSTD_DICT:
+        dict.data->zstd_dict = ZSTD_createDDict(view.data, view.size);
+        break;
+      case dictionary_container::MEDIA:
+        dict.data->media = view;
+        break;
+      case dictionary_container::MEDIA_INDEX:
+        dict.data->media_index = view;
+        break;
+      default:
+        break;
+    }
+  }
+
+  Summary summary;
+  if (glz::read<glz::opts{.error_on_unknown_keys = false}>(summary, index)) {
+    return false;
+  }
+  dict.name = summary.title.empty() ? path_utils::to_utf8(path.stem()) : summary.title;
+  dict.styles = summary.styles;
+
+  return true;
+}
+
+void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
+  Dictionary dict;
+  dict.data = std::make_unique<DictionaryData>();
+
+  const bool is_container = std::filesystem::is_regular_file(path_utils::from_utf8(path_utf8));
+  if (!(is_container ? load_container(path_utf8, dict) : load_directory(path_utf8, dict))) {
+    return;
+  }
+
+  DictionaryData& data = *dict.data;
+  if (!data.hash_table || !data.table.load(data.hash_table.data, data.hash_table.size)) {
+    return;
+  }
+  if (!data.bloom_filter || !data.bloom.load(data.bloom_filter.data, data.bloom_filter.size)) {
+    return;
+  }
+  data.table.set_bloom(&data.bloom);
+  if (!data.blobs) {
+    return;
   }
 
   switch (type) {

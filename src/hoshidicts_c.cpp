@@ -1,11 +1,14 @@
 #include "hoshidicts_c.h"
 
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
+#include "hoshidicts/container.hpp"
 #include "hoshidicts/deinflector.hpp"
 #include "hoshidicts/importer.hpp"
 #include "hoshidicts/lookup.hpp"
@@ -54,6 +57,78 @@ uint64_t hd_import_result_kanji_count(const hd_import_result* r) { return r->res
 uint64_t hd_import_result_media_count(const hd_import_result* r) { return r->result.summary.counts.media.total; }
 
 const char* hd_import_result_error(const hd_import_result* r) { return r->result.error.c_str(); }
+
+// container
+static char* duplicate(const std::string& value) {
+  auto* copy = new char[value.size() + 1];
+  std::memcpy(copy, value.c_str(), value.size() + 1);
+  return copy;
+}
+
+static void store_error(char** error, const std::string& message) {
+  if (error != nullptr) {
+    *error = duplicate(message);
+  }
+}
+
+int hd_container_pack(const char* dictionary_dir, const char* output_path, char** error) {
+  try {
+    const auto result = dictionary_container::pack(dictionary_dir, output_path);
+    if (!result.ok) {
+      store_error(error, result.error);
+      return 1;
+    }
+    return 0;
+  } catch (const std::exception& e) {
+    store_error(error, e.what());
+    return 1;
+  } catch (...) {
+    store_error(error, "could not pack the dictionary");
+    return 1;
+  }
+}
+
+int hd_container_verify(const char* container_path, uint32_t* payload_version, char** error) {
+  try {
+    const auto result = dictionary_container::verify(container_path);
+    if (!result.ok) {
+      store_error(error, result.error);
+      return 1;
+    }
+    if (payload_version != nullptr) {
+      *payload_version = result.container.payload_version;
+    }
+    return 0;
+  } catch (const std::exception& e) {
+    store_error(error, e.what());
+    return 1;
+  } catch (...) {
+    store_error(error, "could not verify the container");
+    return 1;
+  }
+}
+
+int hd_container_index(const char* container_path, char** index_json, char** error) {
+  try {
+    const auto result = dictionary_container::read_index(container_path);
+    if (!result.ok) {
+      store_error(error, result.error);
+      return 1;
+    }
+    if (index_json != nullptr) {
+      *index_json = duplicate(result.json);
+    }
+    return 0;
+  } catch (const std::exception& e) {
+    store_error(error, e.what());
+    return 1;
+  } catch (...) {
+    store_error(error, "could not read the container index");
+    return 1;
+  }
+}
+
+void hd_container_string_free(char* value) { delete[] value; }
 
 // deinflector
 struct hd_deinflector {
