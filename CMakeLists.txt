@@ -96,4 +96,12 @@ if(HOSHIDICTS_BENCHMARK)
     target_link_libraries(benchmark-lookup PRIVATE
         hoshidicts
     )
+
+    add_executable(benchmark-container
+        benchmark/container.cpp
+    )
+
+    target_link_libraries(benchmark-container PRIVATE
+        hoshidicts
+    )
 endif()
