@@ -7,9 +7,13 @@ template <>
 struct glz::meta<Index> {
   using T = Index;
   static constexpr auto value =
-      object("title", glz::raw_string<&T::title>, "revision", glz::raw_string<&T::revision>, "format", &T::format,
-             "isUpdatable", &T::isUpdatable, "indexUrl", glz::raw_string<&T::indexUrl>, "downloadUrl",
-             glz::raw_string<&T::downloadUrl>);
+      object("title", glz::raw_string<&T::title>, "format", &T::format, "version", &T::version,
+             "revision", glz::raw_string<&T::revision>, "minimumYomitanVersion", glz::raw_string<&T::minimumYomitanVersion>,
+             "sequenced", &T::sequenced, "isUpdatable", &T::isUpdatable, "indexUrl", glz::raw_string<&T::indexUrl>,
+             "downloadUrl", glz::raw_string<&T::downloadUrl>, "author", glz::raw_string<&T::author>,
+             "url", glz::raw_string<&T::url>, "description", glz::raw_string<&T::description>,
+             "attribution", glz::raw_string<&T::attribution>, "sourceLanguage", glz::raw_string<&T::sourceLanguage>,
+             "targetLanguage", glz::raw_string<&T::targetLanguage>, "frequencyMode", glz::raw_string<&T::frequencyMode>);
 };
 
 template <>
@@ -27,6 +31,13 @@ struct glz::meta<Meta> {
 };
 
 template <>
+struct glz::meta<Kanji> {
+  using T = Kanji;
+  static constexpr auto value = array(glz::raw_string<&T::character>, glz::raw_string<&T::onyomi>,
+                                      glz::raw_string<&T::kunyomi>, glz::raw_string<&T::tags>, &T::definitions, &T::stats);
+};
+
+template <>
 struct glz::meta<Tag> {
   using T = Tag;
   static constexpr auto value =
@@ -36,7 +47,7 @@ struct glz::meta<Tag> {
 namespace internal {
 struct FrequencyValue {
   int value;
-  std::string display_value;
+  std::optional<std::string> display_value;
 };
 
 struct RawFrequencyFlat {
@@ -51,7 +62,9 @@ struct RawFrequency {
 };
 
 struct PitchesArray {
-  int position = 0;
+  std::variant<int, std::string> position;
+  std::optional<std::variant<int, std::vector<int>>> nasal;
+  std::optional<std::variant<int, std::vector<int>>> devoice;
 };
 
 struct RawPitch {
@@ -90,7 +103,7 @@ struct glz::meta<internal::RawFrequency> {
 template <>
 struct glz::meta<internal::PitchesArray> {
   using T = internal::PitchesArray;
-  static constexpr auto value = object("position", &T::position);
+  static constexpr auto value = object("position", &T::position, "nasal", &T::nasal, "devoice", &T::devoice);
 };
 
 template <>
@@ -126,6 +139,11 @@ bool yomitan_parser::parse_meta_bank(std::string_view content, std::vector<Meta>
   return !error;
 }
 
+bool yomitan_parser::parse_kanji_bank(std::string_view content, std::vector<Kanji>& out) {
+  auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
+  return !error;
+}
+
 bool yomitan_parser::parse_tag_bank(std::string_view content, std::vector<Tag>& out) {
   auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(out, content);
   return !error;
@@ -152,7 +170,7 @@ bool yomitan_parser::parse_frequency(std::string_view content, ParsedFrequency& 
   }
 
   internal::RawFrequency parsed;
-  error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(parsed, content);
+  error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = true}>(parsed, content);
   if (error) {
     return false;
   }
@@ -165,21 +183,38 @@ bool yomitan_parser::parse_frequency(std::string_view content, ParsedFrequency& 
   } else {
     auto& freq = std::get<internal::FrequencyValue>(parsed.frequency);
     out.value = freq.value;
-    out.display_value = freq.display_value.empty() ? std::to_string(freq.value) : freq.display_value;
+    out.display_value = freq.display_value.value_or(std::to_string(freq.value));
   }
   return true;
 }
 
 bool yomitan_parser::parse_pitch(std::string_view content, ParsedPitch& out) {
   internal::RawPitch parsed;
-  auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(parsed, content);
+  auto error = glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = true}>(parsed, content);
   if (error) {
     return false;
   }
 
+  auto to_number_array = [](const std::optional<std::variant<int, std::vector<int>>>& value) -> std::vector<int> {
+    if (!value) {
+      return {};
+    }
+    if (std::holds_alternative<int>(*value)) {
+      return {std::get<int>(*value)};
+    }
+    return std::get<std::vector<int>>(*value);
+  };
+
   out.reading = parsed.reading;
-  out.pitches =
-      parsed.pitches | std::views::transform(&internal::PitchesArray::position) | std::ranges::to<std::vector>();
+  for (auto& pitch : parsed.pitches) {
+    ParsedAccent accent{.nasal = to_number_array(pitch.nasal), .devoice = to_number_array(pitch.devoice)};
+    if (std::holds_alternative<int>(pitch.position)) {
+      accent.position = std::get<int>(pitch.position);
+    } else {
+      accent.pattern = std::move(std::get<std::string>(pitch.position));
+    }
+    out.pitches.emplace_back(std::move(accent));
+  }
   return true;
 }
 

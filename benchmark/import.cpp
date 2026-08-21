@@ -30,8 +30,8 @@ int main(int argc, char** argv) {
         dict_title = result.title;
       }
       if (term_count == 0) {
-        term_count = result.term_count;
-        media_count = result.media_count;
+        term_count = result.summary.counts.terms.total;
+        media_count = result.summary.counts.media.total;
       }
       const std::chrono::duration<double, std::milli> elapsed = end - start;
       durations.push_back(elapsed.count());

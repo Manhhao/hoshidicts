@@ -1,16 +1,28 @@
 #pragma once
 #include <cstdint>
 #include <glaze/glaze.hpp>
+#include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 struct Index {
   std::string_view title;
-  int format = 3;
+  std::optional<int> format;
+  std::optional<int> version;
   std::string_view revision;
-  bool isUpdatable;
-  std::string_view indexUrl;
-  std::string_view downloadUrl;
+  std::optional<std::string_view> minimumYomitanVersion;
+  bool sequenced = false;
+  std::optional<bool> isUpdatable;
+  std::optional<std::string_view> indexUrl;
+  std::optional<std::string_view> downloadUrl;
+  std::optional<std::string_view> author;
+  std::optional<std::string_view> url;
+  std::optional<std::string_view> description;
+  std::optional<std::string_view> attribution;
+  std::optional<std::string_view> sourceLanguage;
+  std::optional<std::string_view> targetLanguage;
+  std::optional<std::string_view> frequencyMode;
 };
 
 struct Term {
@@ -30,6 +42,15 @@ struct Meta {
   glz::raw_json_view data;
 };
 
+struct Kanji {
+  std::string_view character;
+  std::string_view onyomi;
+  std::string_view kunyomi;
+  std::string_view tags;
+  std::vector<std::string_view> definitions;
+  std::unordered_map<std::string, std::string> stats;
+};
+
 struct Tag {
   std::string_view name;
   std::string_view category;
@@ -44,9 +65,16 @@ struct ParsedFrequency {
   std::string display_value;
 };
 
+struct ParsedAccent {
+  int position = 0;
+  std::string pattern;
+  std::vector<int> nasal;
+  std::vector<int> devoice;
+};
+
 struct ParsedPitch {
   std::string_view reading;
-  std::vector<int> pitches;
+  std::vector<ParsedAccent> pitches;
   std::vector<std::string_view> transcriptions;
 };
 
@@ -54,6 +82,7 @@ namespace yomitan_parser {
 bool parse_index(std::string_view content, Index& out);
 bool parse_term_bank(std::string_view content, std::vector<Term>& out);
 bool parse_meta_bank(std::string_view content, std::vector<Meta>& out);
+bool parse_kanji_bank(std::string_view content, std::vector<Kanji>& out);
 bool parse_tag_bank(std::string_view content, std::vector<Tag>& out);
 bool parse_frequency(std::string_view content, ParsedFrequency& out);
 bool parse_pitch(std::string_view content, ParsedPitch& out);

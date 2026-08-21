@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "CHoshiDicts", targets: ["CHoshiDicts"]),
+        .executable(name: "hoshidicts", targets: ["hoshidicts"]),
     ],
     dependencies: [
         .package(url: "https://github.com/facebook/zstd.git", from: "1.5.7"),
@@ -36,6 +37,16 @@ let package = Package(
             ],
             swiftSettings: [
                 .interoperabilityMode(.Cxx)
+            ]
+        ),
+        .executableTarget(
+            name: "hoshidicts",
+            dependencies: ["CHoshiDicts"],
+            path: ".",
+            sources: ["cli/main.cpp"],
+            cxxSettings: [
+                .headerSearchPath("include"),
+                .headerSearchPath("external/utfcpp/source"),
             ]
         ),
     ],

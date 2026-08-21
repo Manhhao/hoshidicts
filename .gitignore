@@ -50,3 +50,4 @@ build/
 
 # Swift 
 Package.resolved
+.swiftpm/

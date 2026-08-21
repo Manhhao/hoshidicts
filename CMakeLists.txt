@@ -5,7 +5,12 @@ project(hoshidicts LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(HOSHIDICTS_CLI "hoshidicts cli" OFF)
+option(HOSHIDICTS_BENCHMARK "hoshidicts import and lookup benchmarks" OFF)
 
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
@@ -39,11 +44,13 @@ add_library(hoshidicts
     src/language/en/preprocessor.cpp
     src/language/en/processor.cpp
     src/language/ja/deinflector.cpp
+    src/language/ja/kanji_variants.cpp
     src/language/ja/pos.cpp
     src/language/ja/preprocessor.cpp
     src/language/ja/processor.cpp
     src/query.cpp
     src/lookup.cpp
+    src/hoshidicts_c.cpp
 )
 
 target_include_directories(hoshidicts PUBLIC
@@ -60,26 +67,42 @@ target_link_libraries(hoshidicts PRIVATE
     utf8proc::utf8proc
 )
 
-add_executable(hoshidicts-cli
-    cli/main.cpp
-)
+if(MSVC)
+    target_compile_options(hoshidicts PRIVATE /utf-8)
+endif()
 
-target_link_libraries(hoshidicts-cli PRIVATE
-    hoshidicts
-)
+if(HOSHIDICTS_CLI)
+    add_executable(hoshidicts-cli
+        cli/main.cpp
+    )
 
-add_executable(benchmark-import
-    benchmark/import.cpp
-)
+    add_executable(hoshidicts-cli-c
+        cli/main.c
+    )
 
-target_link_libraries(benchmark-import PRIVATE
-    hoshidicts
-)
+    target_link_libraries(hoshidicts-cli PRIVATE
+        hoshidicts
+    )
 
-add_executable(benchmark-lookup
-    benchmark/lookup.cpp
-)
+    target_link_libraries(hoshidicts-cli-c PRIVATE
+        hoshidicts
+    )
+endif()
 
-target_link_libraries(benchmark-lookup PRIVATE
-    hoshidicts
-)
+if(HOSHIDICTS_BENCHMARK)
+    add_executable(benchmark-import
+        benchmark/import.cpp
+    )
+
+    target_link_libraries(benchmark-import PRIVATE
+        hoshidicts
+    )
+
+    add_executable(benchmark-lookup
+        benchmark/lookup.cpp
+    )
+
+    target_link_libraries(benchmark-lookup PRIVATE
+        hoshidicts
+    )
+endif()

@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <glaze/glaze.hpp>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -14,12 +13,8 @@
 #include "../text_variants.hpp"
 #include "ja.hpp"
 
-namespace japanese_language {
-struct KanjiMapping {
-  std::string oyaji;
-  std::vector<std::string> itaiji;
-};
-}
+extern const char32_t kanji_variants[][2];
+extern const unsigned kanji_variants_count;
 
 namespace {
 
@@ -29,6 +24,8 @@ constexpr uint32_t KATAKANA_SMALL_KE = 0x30f6;
 constexpr uint32_t KANA_PROLONGED_SOUND_MARK = 0x30fc;
 constexpr uint32_t HIRAGANA_SMALL_TSU = 0x3063;
 constexpr uint32_t KATAKANA_SMALL_TSU = 0x30c3;
+
+constexpr char32_t KATAKANA_MIDDLE_DOT = 0x30fb;
 
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_START = 0x3041;
 constexpr uint32_t HIRAGANA_CONVERSION_RANGE_END = 0x3096;
@@ -200,23 +197,12 @@ std::u32string alphanumeric_to_fullwidth(const std::u32string& text) {
   return result;
 }
 
-constexpr unsigned char mapping_list[] = {
-#embed "../../../external/kanji-processor/src/full_list.json"
-};
-
 std::u32string standardize_kanji(const std::u32string& text) {
   static const auto map = [] {
-    std::vector<japanese_language::KanjiMapping> list;
-    if (glz::read_json(list, std::string_view{reinterpret_cast<const char*>(mapping_list), sizeof(mapping_list)})) {
-      return ankerl::unordered_dense::map<char32_t, char32_t>{};
-    };
-
     ankerl::unordered_dense::map<char32_t, char32_t> m;
-    for (const auto& [oyaji, itaiji] : list) {
-      const char32_t parent = utf8::utf8to32(oyaji).front();
-      for (const auto& variant : itaiji) {
-        m[utf8::utf8to32(variant).front()] = parent;
-      }
+    m.reserve(kanji_variants_count);
+    for (unsigned i = 0; i < kanji_variants_count; ++i) {
+      m[kanji_variants[i][0]] = kanji_variants[i][1];
     }
     return m;
   }();
@@ -283,41 +269,54 @@ std::u32string numbers_to_kanji(const std::u32string& text) {
   return result;
 }
 
+std::u32string strip_middle_dots(const std::u32string& text) {
+  std::u32string result;
+  for (char32_t c : text) {
+    if (c != KATAKANA_MIDDLE_DOT) {
+      result += c;
+    }
+  }
+  return result;
+}
+
 std::string process_u32(const std::string& src, const std::function<std::u32string(const std::u32string&)>& process) {
   return utf8::utf32to8(process(utf8::utf8to32(src)));
 }
 
 std::vector<language::internal::TextProcessorDefinition> get_japanese_processors() {
-  return {{.process =
-               [](const std::string& text) {
-                 return std::vector<std::string>{text, process_u32(text, katakana_to_hiragana),
-                                                 process_u32(text, hiragana_to_katakana)};
-               }},
-          {.process =
-               [](const std::string& text) {
-                 return std::vector<std::string>{
-                     text,
-                     process_u32(text, [](const std::u32string& value) {
-                       return collapse_emphatic_sequences(value, false);
-                     }),
-                     process_u32(text, [](const std::u32string& value) {
-                       return collapse_emphatic_sequences(value, true);
-                     })};
-               }},
-          {.process = [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, nfkc)}; }},
-          {.process =
-               [](const std::string& text) {
-                 return std::vector<std::string>{text, process_u32(text, alphanumeric_to_fullwidth)};
-               }},
-          {.process = [](const std::string& text) {
-            return std::vector<std::string>{text, process_u32(text, standardize_kanji)};
-          }},
-          {.process = [](const std::string& text) {
-            return std::vector<std::string>{text, process_u32(text, expand_iteration_marks)};
-          }},
-          {.process = [](const std::string& text) {
-            return std::vector<std::string>{text, process_u32(text, numbers_to_kanji)};
-          }}};
+  return {
+      {.process = [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, nfkc)}; }},
+      {.process =
+           [](const std::string& text) {
+             return std::vector<std::string>{text, process_u32(text, katakana_to_hiragana),
+                                             process_u32(text, hiragana_to_katakana)};
+           }},
+      {.process =
+           [](const std::string& text) {
+             return std::vector<std::string>{
+                 text,
+                 process_u32(text,
+                             [](const std::u32string& value) { return collapse_emphatic_sequences(value, false); }),
+                 process_u32(text,
+                             [](const std::u32string& value) { return collapse_emphatic_sequences(value, true); })};
+           }},
+      {.process =
+           [](const std::string& text) {
+             return std::vector<std::string>{text, process_u32(text, alphanumeric_to_fullwidth)};
+           }},
+      {.process =
+           [](const std::string& text) {
+             return std::vector<std::string>{text, process_u32(text, standardize_kanji)};
+           }},
+      {.process =
+           [](const std::string& text) {
+             return std::vector<std::string>{text, process_u32(text, expand_iteration_marks)};
+           }},
+      {.process =
+           [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, numbers_to_kanji)}; }},
+      {.process = [](const std::string& text) {
+        return std::vector<std::string>{text, process_u32(text, strip_middle_dots)};
+      }}};
 }
 
 }

@@ -17,8 +17,10 @@
 #include <vector>
 
 #include "hash/hash.hpp"
+#include "hoshidicts/importer.hpp"
 #include "json/yomitan_parser.hpp"
 #include "memory/memory.hpp"
+#include "path_utils.hpp"
 
 namespace {
 template <typename T>
@@ -34,6 +36,11 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
   addr += len;
   return result;
 }
+
+ZSTD_DCtx* thread_dctx() {
+  static thread_local std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> ctx(ZSTD_createDCtx(), ZSTD_freeDCtx);
+  return ctx.get();
+}
 }
 
 struct DictionaryQuery::DictionaryData {
@@ -45,6 +52,7 @@ struct DictionaryQuery::DictionaryData {
   memory::mapped_file bloom_filter;
   memory::mapped_file media;
   memory::mapped_file media_index;
+  ZSTD_DDict* zstd_dict = nullptr;
 
   ~DictionaryData() {
     memory::unmap(blobs);
@@ -52,6 +60,7 @@ struct DictionaryQuery::DictionaryData {
     memory::unmap(bloom_filter);
     memory::unmap(media);
     memory::unmap(media_index);
+    ZSTD_freeDDict(zstd_dict);
   }
 };
 
@@ -67,56 +76,82 @@ DictionaryQuery::Dictionary::~Dictionary() = default;
 DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
-void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
+bool DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
+  const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   uint8_t format_version = 0;
-  if (std::filesystem::is_regular_file(path + "/.hoshidicts_3")) {
+  if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
+    format_version = 4;
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
     format_version = 3;
-  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_2")) {
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_2")) {
     format_version = 2;
-  } else if (std::filesystem::is_regular_file(path + "/.hoshidicts_1")) {
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_1")) {
     format_version = 1;
   } else {
-    return;
+    return false;
   }
 
   Dictionary dict;
-  Index index;
-  std::string buf{};
-  if (glz::read_file_json(index, path + "/index.json", buf)) {
-    return;
+  Summary summary;
+  std::ifstream index_file(path / "index.json", std::ios::binary);
+  if (!index_file) {
+    return false;
+  }
+  std::string buf(std::istreambuf_iterator<char>(index_file), {});
+  if (glz::read<glz::opts{.error_on_unknown_keys = false}>(summary, buf)) {
+    return false;
   }
 
-  dict.name = index.title.empty() ? std::filesystem::path(path).stem().string() : index.title;
-  if (std::filesystem::exists(path + "/styles.css")) {
-    std::ifstream f(path + "/styles.css");
+  dict.name = summary.title.empty() ? path_utils::to_utf8(path.stem()) : summary.title;
+  dict.styles = summary.styles;
+  if (dict.styles.empty() && std::filesystem::exists(path / "styles.css")) {
+    std::ifstream f(path / "styles.css");
     dict.styles = std::string(std::istreambuf_iterator<char>(f), {});
   }
 
   dict.data = std::make_unique<DictionaryData>();
   dict.data->format_version = format_version;
 
-  dict.data->hash_table = memory::map_rd(path + "/hash.table");
+  dict.data->hash_table = memory::map_rd(path / "hash.table");
   if (!dict.data->hash_table) {
-    return;
+    return false;
   }
-  dict.data->table.load(dict.data->hash_table.data);
+  if (!dict.data->table.load(dict.data->hash_table.data, dict.data->hash_table.size)) {
+    return false;
+  }
 
-  dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
+  dict.data->bloom_filter = memory::map_rd(path / "bloom.filter");
   if (!dict.data->bloom_filter) {
-    hash::bloom::build_to_file(dict.data->table.populated(), path + "/bloom.filter");
-    dict.data->bloom_filter = memory::map_rd(path + "/bloom.filter");
+    return false;
   }
-  dict.data->bloom.load(dict.data->bloom_filter.data);
+  if (!dict.data->bloom.load(dict.data->bloom_filter.data, dict.data->bloom_filter.size)) {
+    return false;
+  }
   dict.data->table.set_bloom(&dict.data->bloom);
 
-  dict.data->blobs = memory::map_rd(path + "/blobs.bin");
+  dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
-    return;
+    return false;
   }
 
-  dict.data->media = memory::map_rd(path + "/media.bin");
+  dict.data->media = memory::map_rd(path / "media.bin");
   if (dict.data->media) {
-    dict.data->media_index = memory::map_rd(path + "/media.idx");
+    dict.data->media_index = memory::map_rd(path / "media.idx");
+  }
+
+  if (format_version >= 4) {
+    std::ifstream f(path / "dict.zstd", std::ios::binary);
+    if (!f) {
+      return false;
+    }
+    const std::string blob(std::istreambuf_iterator<char>(f), {});
+    if (blob.empty()) {
+      return false;
+    }
+    dict.data->zstd_dict = ZSTD_createDDict(blob.data(), blob.size());
+    if (dict.data->zstd_dict == nullptr) {
+      return false;
+    }
   }
 
   switch (type) {
@@ -129,7 +164,11 @@ void DictionaryQuery::add_dict(const std::string& path, DictionaryType type) {
     case PITCH:
       pitch_dicts_.push_back(std::move(dict));
       break;
+    case KANJI:
+      kanji_dicts_.push_back(std::move(dict));
+      break;
   }
+  return true;
 }
 
 void DictionaryQuery::add_term_dict(const std::string& path) { add_dict(path, DictionaryQuery::DictionaryType::TERM); }
@@ -138,6 +177,26 @@ void DictionaryQuery::add_freq_dict(const std::string& path) { add_dict(path, Di
 
 void DictionaryQuery::add_pitch_dict(const std::string& path) {
   add_dict(path, DictionaryQuery::DictionaryType::PITCH);
+}
+
+void DictionaryQuery::add_kanji_dict(const std::string& path) {
+  add_dict(path, DictionaryQuery::DictionaryType::KANJI);
+}
+
+bool DictionaryQuery::try_add_term_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::TERM);
+}
+
+bool DictionaryQuery::try_add_freq_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::FREQ);
+}
+
+bool DictionaryQuery::try_add_pitch_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::PITCH);
+}
+
+bool DictionaryQuery::try_add_kanji_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::KANJI);
 }
 
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
@@ -205,6 +264,7 @@ std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& ex
       entry.compressed_data = data->blobs.data + glossary_offset;
       entry.compressed_size = glossary_size;
       entry.dictionary_format_version = data->format_version;
+      entry.zstd_dict = data->zstd_dict;
 
       if (data->format_version >= 2) {
         const auto redirect_count = read_val<uint32_t>(blob_addr);
@@ -342,7 +402,7 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
       const uint8_t* index_addr = data->blobs.data + offset_addr;
       auto count = read_val<uint32_t>(index_addr);
 
-      std::vector<int> pitch_positions;
+      std::vector<Pitch> pitches;
       std::vector<std::string> transcriptions;
       for (uint32_t i = 0; i < count; i++) {
         auto offset = read_val<uint64_t>(index_addr);
@@ -370,7 +430,12 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
             if (!parsed.reading.empty() && parsed.reading != term.reading) {
               continue;
             }
-            pitch_positions.insert(pitch_positions.end(), parsed.pitches.begin(), parsed.pitches.end());
+            for (auto& accent : parsed.pitches) {
+              pitches.emplace_back(Pitch{.position = accent.position,
+                                         .pattern = std::move(accent.pattern),
+                                         .nasal = std::move(accent.nasal),
+                                         .devoice = std::move(accent.devoice)});
+            }
           }
         } else if (mode == "ipa") {
           auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
@@ -385,10 +450,10 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
           }
         }
       }
-      if (!pitch_positions.empty() || !transcriptions.empty()) {
+      if (!pitches.empty() || !transcriptions.empty()) {
         term.pitches.emplace_back(PitchEntry{
             .dict_name = name,
-            .pitch_positions = std::move(pitch_positions),
+            .pitches = std::move(pitches),
             .transcriptions = std::move(transcriptions),
         });
       }
@@ -396,7 +461,72 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   }
 }
 
-std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) {
+KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
+  KanjiResult result;
+  result.character = kanji;
+
+  for (const auto& [name, styles, data] : kanji_dicts_) {
+    uint64_t offset_addr = data->table(kanji);
+    if (offset_addr == 0) {
+      continue;
+    }
+    const uint8_t* index_addr = data->blobs.data + offset_addr;
+    auto count = read_val<uint32_t>(index_addr);
+
+    for (uint32_t i = 0; i < count; i++) {
+      auto offset = read_val<uint64_t>(index_addr);
+      const uint8_t* blob_addr = data->blobs.data + offset;
+
+      auto type = read_val<uint8_t>(blob_addr);
+      if (type != 2) {
+        continue;
+      }
+
+      auto char_len = read_val<uint8_t>(blob_addr);
+      std::string_view char_sv = read_str(blob_addr, char_len);
+      if (char_sv != kanji) {
+        continue;
+      }
+
+      auto onyomi_len = read_val<uint16_t>(blob_addr);
+      std::string_view onyomi = read_str(blob_addr, onyomi_len);
+
+      auto kunyomi_len = read_val<uint16_t>(blob_addr);
+      std::string_view kunyomi = read_str(blob_addr, kunyomi_len);
+
+      auto tags_len = read_val<uint16_t>(blob_addr);
+      std::string_view tags = read_str(blob_addr, tags_len);
+
+      KanjiEntry entry;
+      entry.dict_name = name;
+      entry.onyomi = onyomi;
+      entry.kunyomi = kunyomi;
+      entry.tags = tags;
+
+      auto def_count = read_val<uint16_t>(blob_addr);
+      for (uint16_t j = 0; j < def_count; j++) {
+        auto def_len = read_val<uint16_t>(blob_addr);
+        std::string_view def = read_str(blob_addr, def_len);
+        entry.definitions.emplace_back(def);
+      }
+
+      auto stat_count = read_val<uint16_t>(blob_addr);
+      for (uint16_t j = 0; j < stat_count; j++) {
+        auto key_len = read_val<uint16_t>(blob_addr);
+        std::string_view key = read_str(blob_addr, key_len);
+        auto val_len = read_val<uint16_t>(blob_addr);
+        std::string_view val = read_str(blob_addr, val_len);
+        entry.stats.emplace(key, val);
+      }
+
+      result.entries.push_back(std::move(entry));
+    }
+  }
+
+  return result;
+}
+
+std::string DictionaryQuery::decompress_glossary(const void* data, size_t size, const ZSTD_DDict_s* dict) {
   if (!data || size == 0) {
     return "";
   }
@@ -409,7 +539,7 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size) 
   std::string result;
   result.resize(decompressed_size);
 
-  size_t actual_size = ZSTD_decompress(result.data(), result.size(), data, size);
+  size_t actual_size = ZSTD_decompress_usingDDict(thread_dctx(), result.data(), result.size(), data, size, dict);
   if (ZSTD_isError(actual_size)) {
     return "";
   }
@@ -423,7 +553,7 @@ void DictionaryQuery::materialize(TermResult& term) const {
     if (!g.glossary.empty()) {
       continue;
     }
-    g.glossary = decompress_glossary(g.compressed_data, g.compressed_size);
+    g.glossary = decompress_glossary(g.compressed_data, g.compressed_size, g.zstd_dict);
   }
 }
 

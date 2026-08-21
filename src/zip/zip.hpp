@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,7 +21,7 @@ struct Zip {
   std::vector<ZipEntry> entries;
 
   ~Zip();
-  bool open(const std::string& path);
+  bool open(const std::filesystem::path& path);
   int find(const std::string& name) const;
   std::string read(int index) const;
 

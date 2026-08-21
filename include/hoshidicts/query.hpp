@@ -33,14 +33,17 @@ struct DictionaryRedirect {
   std::vector<std::string> inflection_rules;
 };
 
+struct ZSTD_DDict_s;
+
 struct GlossaryEntry {
   std::string dict_name;
   std::string glossary;
   std::string definition_tags;
   std::string term_tags;
-  std::vector<DictionaryRedirect> redirects;
   const uint8_t* compressed_data = nullptr;
   uint32_t compressed_size = 0;
+  const ZSTD_DDict_s* zstd_dict = nullptr;
+  std::vector<DictionaryRedirect> redirects;
   uint8_t dictionary_format_version = 1;
 };
 
@@ -49,9 +52,16 @@ struct FrequencyEntry {
   std::vector<Frequency> frequencies;
 };
 
+struct Pitch {
+  int position = 0;
+  std::string pattern;
+  std::vector<int> nasal;
+  std::vector<int> devoice;
+};
+
 struct PitchEntry {
   std::string dict_name;
-  std::vector<int> pitch_positions;
+  std::vector<Pitch> pitches;
   std::vector<std::string> transcriptions;
 };
 
@@ -63,6 +73,20 @@ struct TermResult {
   std::vector<GlossaryEntry> glossaries;
   std::vector<FrequencyEntry> frequencies;
   std::vector<PitchEntry> pitches;
+};
+
+struct KanjiEntry {
+  std::string dict_name;
+  std::string onyomi;
+  std::string kunyomi;
+  std::string tags;
+  std::vector<std::string> definitions;
+  std::unordered_map<std::string, std::string> stats;
+};
+
+struct KanjiResult {
+  std::string character;
+  std::vector<KanjiEntry> entries;
 };
 
 class DictionaryQuery {
@@ -79,9 +103,15 @@ class DictionaryQuery {
   void add_term_dict(const std::string& path);
   void add_freq_dict(const std::string& path);
   void add_pitch_dict(const std::string& path);
+  void add_kanji_dict(const std::string& path);
+  bool try_add_term_dict(const std::string& path);
+  bool try_add_freq_dict(const std::string& path);
+  bool try_add_pitch_dict(const std::string& path);
+  bool try_add_kanji_dict(const std::string& path);
 
   void query_freq(std::vector<TermResult>& terms) const;
   void query_pitch(std::vector<TermResult>& terms) const;
+  KanjiResult query_kanji(const std::string& kanji) const;
 
   std::vector<TermResult> query(const std::string& expression) const;
 
@@ -114,12 +144,13 @@ class DictionaryQuery {
     std::string styles;
     std::unique_ptr<DictionaryData> data;
   };
-  enum DictionaryType : uint8_t { TERM, FREQ, PITCH };
+  enum DictionaryType : uint8_t { TERM, FREQ, PITCH, KANJI };
 
-  void add_dict(const std::string& path, DictionaryType);
+  bool add_dict(const std::string& path, DictionaryType);
 
-  static std::string decompress_glossary(const void* data, size_t size);
+  static std::string decompress_glossary(const void* data, size_t size, const ZSTD_DDict_s* dict);
   std::vector<Dictionary> term_dicts_;
   std::vector<Dictionary> freq_dicts_;
   std::vector<Dictionary> pitch_dicts_;
+  std::vector<Dictionary> kanji_dicts_;
 };

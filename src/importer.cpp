@@ -2,10 +2,13 @@
 
 #include <ankerl/unordered_dense.h>
 #include <xxh3.h>
+#define ZDICT_STATIC_LINKING_ONLY
+#include <zdict.h>
 #include <zstd.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -24,12 +27,15 @@
 #include "hash/bloom.hpp"
 #include "hash/hash.hpp"
 #include "json/yomitan_parser.hpp"
+#include "path_utils.hpp"
 #include "zip/zip.hpp"
 
 namespace {
 struct Files {
   std::vector<int> term_banks;
   std::vector<int> meta_banks;
+  std::vector<int> kanji_banks;
+  std::vector<int> kanji_meta_banks;
   std::vector<int> tag_banks;
   std::vector<int> media_files;
 };
@@ -39,9 +45,8 @@ struct ProcessedFile {
   std::vector<std::pair<uint64_t, uint64_t>> offsets;
   ankerl::unordered_dense::map<uint64_t, std::vector<char>> glossaries;
   std::vector<std::pair<uint64_t, uint64_t>> glossary_offsets;
+  SummaryMetaCount meta_counts;
   size_t count = 0;
-  size_t pitch_count = 0;
-  size_t freq_count = 0;
 };
 
 struct DictionaryRedirectDefinition {
@@ -78,6 +83,10 @@ Files get_files(const Zip& zip) {
       files.term_banks.push_back(i);
     } else if (name.starts_with("term_meta_bank_")) {
       files.meta_banks.push_back(i);
+    } else if (name.starts_with("kanji_bank_")) {
+      files.kanji_banks.push_back(i);
+    } else if (name.starts_with("kanji_meta_bank_")) {
+      files.kanji_meta_banks.push_back(i);
     } else if (name.starts_with("tag_bank_")) {
       files.tag_banks.push_back(i);
     } else if (!(name == "styles.css" || name == "index.json")) {
@@ -247,7 +256,53 @@ void radix_sort(std::vector<std::pair<uint64_t, uint64_t>>& offsets) {
   }
 }
 
-ProcessedFile process_term_bank(const std::string& content) {
+std::vector<char> train_zstd_dict(const Zip& zip, const Files& files, bool low_ram) {
+  if (files.term_banks.empty()) {
+    return {};
+  }
+
+  const std::string content = zip.read(files.term_banks[0]);
+  std::vector<Term> terms;
+  if (!yomitan_parser::parse_term_bank(content, terms)) {
+    return {};
+  }
+
+  size_t bank_bytes = 0;
+  for (const auto& term : terms) {
+    bank_bytes += term.glossary.str.size();
+  }
+
+  std::vector<char> samples;
+  std::vector<size_t> sizes;
+  constexpr size_t max_sample_bytes = 2L * 1024 * 1024;
+  const size_t step = std::max<size_t>(1, bank_bytes / max_sample_bytes);
+  for (size_t i = 0; i < terms.size() && samples.size() < max_sample_bytes; i += step) {
+    write_str(samples, terms[i].glossary.str);
+    sizes.push_back(terms[i].glossary.str.size());
+  }
+
+  if (sizes.size() < 8) {
+    return {};
+  }
+
+  ZDICT_fastCover_params_t params = {};
+  params.d = 8;
+  params.steps = 4;
+  params.splitPoint = 1.0;
+  params.nbThreads = low_ram ? 1 : std::max<unsigned int>(1, std::thread::hardware_concurrency());
+
+  std::vector<char> dict(static_cast<size_t>(110 * 1024));
+  const size_t dict_size = ZDICT_optimizeTrainFromBuffer_fastCover(
+      dict.data(), dict.size(), samples.data(), sizes.data(), static_cast<unsigned>(sizes.size()), &params);
+  if (ZDICT_isError(dict_size)) {
+    return {};
+  }
+
+  dict.resize(dict_size);
+  return dict;
+}
+
+ProcessedFile process_term_bank(const std::string& content, const ZSTD_CDict* cdict) {
   ProcessedFile processed;
   if (content.empty()) {
     return processed;
@@ -263,6 +318,7 @@ ProcessedFile process_term_bank(const std::string& content) {
   if (!cctx) {
     return processed;
   }
+  ZSTD_CCtx_refCDict(cctx, cdict);
 
   for (auto& term : out) {
     const ProcessedGlossary glossary = process_glossary(term.glossary.str);
@@ -274,8 +330,8 @@ ProcessedFile process_term_bank(const std::string& content) {
       if (it == processed.glossaries.end()) {
         const size_t bound = ZSTD_compressBound(glossary.display_glossary.size());
         compressed.resize(bound);
-        const size_t compressed_size = ZSTD_compressCCtx(
-            cctx, compressed.data(), bound, glossary.display_glossary.data(), glossary.display_glossary.size(), 0);
+        const size_t compressed_size = ZSTD_compress2(cctx, compressed.data(), bound, glossary.display_glossary.data(),
+                                                      glossary.display_glossary.size());
         if (ZSTD_isError(compressed_size)) {
           ZSTD_freeCCtx(cctx);
           throw std::runtime_error("failed to compress glossary");
@@ -351,18 +407,147 @@ ProcessedFile process_meta_bank(const std::string& content) {
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
     processed.count++;
-    if (mode == "freq") {
-      processed.freq_count++;
-    } else if (mode == "pitch" || mode == "ipa") {
-      processed.pitch_count++;
+    processed.meta_counts[std::string(mode)]++;
+  }
+
+  processed.meta_counts["total"] = processed.count;
+  return processed;
+}
+
+ProcessedFile process_kanji_bank(const std::string& content) {
+  ProcessedFile processed;
+  if (content.empty()) {
+    return processed;
+  }
+
+  std::vector<Kanji> out;
+  if (!yomitan_parser::parse_kanji_bank(content, out)) {
+    return processed;
+  }
+
+  for (auto& kanji : out) {
+    uint64_t offset = processed.data.size();
+    std::string_view character = kanji.character;
+    std::string_view onyomi = kanji.onyomi;
+    std::string_view kunyomi = kanji.kunyomi;
+    std::string_view tags = kanji.tags;
+
+    write_val<uint8_t>(processed.data, 2);
+    write_val<uint8_t>(processed.data, character.size());
+    write_str(processed.data, character);
+    write_val<uint16_t>(processed.data, onyomi.size());
+    write_str(processed.data, onyomi);
+    write_val<uint16_t>(processed.data, kunyomi.size());
+    write_str(processed.data, kunyomi);
+    write_val<uint16_t>(processed.data, tags.size());
+    write_str(processed.data, tags);
+
+    write_val<uint16_t>(processed.data, kanji.definitions.size());
+    for (auto& def : kanji.definitions) {
+      write_val<uint16_t>(processed.data, def.size());
+      write_str(processed.data, def);
     }
+
+    write_val<uint16_t>(processed.data, kanji.stats.size());
+    for (auto& [k, v] : kanji.stats) {
+      write_val<uint16_t>(processed.data, k.size());
+      write_str(processed.data, k);
+      write_val<uint16_t>(processed.data, v.size());
+      write_str(processed.data, v);
+    }
+
+    processed.offsets.emplace_back(XXH3_64bits(character.data(), character.size()), offset);
+    processed.count++;
   }
 
   return processed;
 }
 
+size_t count_json_array(const std::string& content) {
+  if (content.empty()) {
+    return 0;
+  }
+
+  std::vector<glz::raw_json> entries;
+  if (glz::read<glz::opts{.error_on_unknown_keys = false, .error_on_missing_keys = false}>(entries, content)) {
+    return 0;
+  }
+  return entries.size();
+}
+
+SummaryMetaCount count_meta_modes(const std::string& content) {
+  SummaryMetaCount counts{{"total", 0}};
+  if (content.empty()) {
+    return counts;
+  }
+
+  std::vector<Meta> entries;
+  if (!yomitan_parser::parse_meta_bank(content, entries)) {
+    return counts;
+  }
+
+  for (const auto& entry : entries) {
+    counts[std::string(entry.mode)]++;
+    counts["total"]++;
+  }
+  return counts;
+}
+
+void count_unprocessed_banks(const Zip& zip, const Files& files, ImportResult& result) {
+  for (int file_index : files.kanji_meta_banks) {
+    SummaryMetaCount modes = count_meta_modes(zip.read(file_index));
+    for (const auto& [name, count] : modes) {
+      result.summary.counts.kanjiMeta[name] += count;
+    }
+  }
+
+  for (int file_index : files.tag_banks) {
+    result.summary.counts.tagMeta.total += count_json_array(zip.read(file_index));
+  }
+}
+
+template <typename T>
+std::optional<std::string> copy_optional_string(T value) {
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+  return std::string(*value);
+}
+
+uint64_t unix_time_ms() {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+Summary create_summary(const Index& index, std::string styles) {
+  Summary summary;
+  summary.title = std::string(index.title);
+  summary.revision = std::string(index.revision);
+  summary.sequenced = index.sequenced;
+  summary.minimumYomitanVersion = copy_optional_string(index.minimumYomitanVersion);
+  summary.version = index.version.value_or(index.format.value_or(3));
+  summary.importDate = unix_time_ms();
+  summary.prefixWildcardsSupported = false;
+  summary.styles = std::move(styles);
+  summary.isUpdatable = index.isUpdatable;
+  summary.indexUrl = copy_optional_string(index.indexUrl);
+  summary.downloadUrl = copy_optional_string(index.downloadUrl);
+  summary.author = copy_optional_string(index.author);
+  summary.url = copy_optional_string(index.url);
+  summary.description = copy_optional_string(index.description);
+  summary.attribution = copy_optional_string(index.attribution);
+  summary.sourceLanguage = copy_optional_string(index.sourceLanguage);
+  summary.targetLanguage = copy_optional_string(index.targetLanguage);
+  summary.frequencyMode = copy_optional_string(index.frequencyMode);
+  summary.importSuccess = true;
+  summary.counts.termMeta["total"] = 0;
+  summary.counts.kanjiMeta["total"] = 0;
+  return summary;
+}
+
 void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
-                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
+                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram,
+                 const ZSTD_CDict* cdict) {
   if (files.empty()) {
     return;
   }
@@ -401,12 +586,12 @@ void write_terms(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
     }
 
     write_offset += processed.data.size();
-    result.term_count += processed.count;
+    result.summary.counts.terms.total += processed.count;
   };
 
   for (int file_index : files) {
-    threads.push_back(
-        std::async(std::launch::async, [&zip, file_index]() { return process_term_bank(zip.read(file_index)); }));
+    threads.push_back(std::async(
+        std::launch::async, [&zip, file_index, cdict]() { return process_term_bank(zip.read(file_index), cdict); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -440,14 +625,53 @@ void write_meta(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>&
     }
 
     write_offset += processed.data.size();
-    result.meta_count += processed.count;
-    result.freq_count += processed.freq_count;
-    result.pitch_count += processed.pitch_count;
+    for (const auto& [mode, count] : processed.meta_counts) {
+      result.summary.counts.termMeta[mode] += count;
+    }
   };
 
   for (int file_index : files) {
     threads.push_back(
         std::async(std::launch::async, [&zip, file_index]() { return process_meta_bank(zip.read(file_index)); }));
+
+    if (threads.size() == max_threads) {
+      write_processed(threads.front().get());
+      threads.pop_front();
+    }
+  }
+
+  while (!threads.empty()) {
+    write_processed(threads.front().get());
+    threads.pop_front();
+  }
+}
+
+void write_kanji(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>& offsets, const Zip& zip,
+                 const std::vector<int>& files, uint64_t& write_offset, ImportResult& result, bool low_ram) {
+  if (files.empty()) {
+    return;
+  }
+
+  size_t max_threads =
+      low_ram ? 2 : std::max<size_t>(4, static_cast<const unsigned long>(std::thread::hardware_concurrency()) + 4);
+  std::deque<std::future<ProcessedFile>> threads;
+  auto write_processed = [&](ProcessedFile&& processed) {
+    if (processed.data.empty()) {
+      return;
+    }
+    file.write(processed.data.data(), static_cast<std::streamsize>(processed.data.size()));
+
+    for (auto& [hash, offset] : processed.offsets) {
+      offsets.emplace_back(hash, offset + write_offset);
+    }
+
+    write_offset += processed.data.size();
+    result.summary.counts.kanji.total += processed.count;
+  };
+
+  for (int file_index : files) {
+    threads.push_back(
+        std::async(std::launch::async, [&zip, file_index]() { return process_kanji_bank(zip.read(file_index)); }));
 
     if (threads.size() == max_threads) {
       write_processed(threads.front().get());
@@ -485,13 +709,13 @@ std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>&
   return offset_buf;
 }
 
-size_t write_media(const std::string& path, const Zip& zip, const std::vector<int>& files) {
+size_t write_media(const std::filesystem::path& path, const Zip& zip, const std::vector<int>& files) {
   if (files.empty()) {
     return 0;
   }
 
-  std::ofstream media(path + "/media.bin", std::ios::binary);
-  std::ofstream media_idx(path + "/media.idx", std::ios::binary);
+  std::ofstream media(path / "media.bin", std::ios::binary);
+  std::ofstream media_idx(path / "media.idx", std::ios::binary);
   setup_stream_exceptions(media);
   setup_stream_exceptions(media_idx);
 
@@ -532,9 +756,12 @@ size_t write_media(const std::string& path, const Zip& zip, const std::vector<in
 
 ImportResult dictionary_importer::import(const std::string& zip_path, const std::string& output_dir, bool low_ram) {
   ImportResult result;
+  std::filesystem::path dict_path;
   try {
+    const std::filesystem::path native_zip_path = path_utils::from_utf8(zip_path);
+    const std::filesystem::path native_output_dir = path_utils::from_utf8(output_dir);
     Zip zip;
-    if (!zip.open(zip_path)) {
+    if (!zip.open(native_zip_path)) {
       throw std::runtime_error("failed to open zip");
     }
 
@@ -554,34 +781,38 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
 
     result.title = index.title;
 
-    std::filesystem::path dict_path = std::filesystem::path(output_dir) / result.title;
-    std::string path = dict_path.string();
+    dict_path = native_output_dir / path_utils::from_utf8(result.title);
     std::filesystem::create_directories(dict_path);
 
-    if (glz::write_file_json(index, path + "/index.json", std::string{})) {
-      throw std::runtime_error("failed to write index.json");
-    }
-
+    std::string styles;
     int styles_idx = zip.find("styles.css");
     if (styles_idx >= 0) {
-      std::string styles = zip.read(styles_idx);
-      if (!styles.empty()) {
-        std::ofstream styles_file(path + "/styles.css", std::ios::binary);
-        setup_stream_exceptions(styles_file);
-        styles_file.write(styles.data(), static_cast<std::streamsize>(styles.size()));
-      }
+      styles = zip.read(styles_idx);
     }
 
+    result.summary = create_summary(index, styles);
     const Files files = get_files(zip);
-    std::future<size_t> media_thread =
-        std::async(std::launch::async, [&path, &zip, &files]() { return write_media(path, zip, files.media_files); });
+    std::future<size_t> media_thread = std::async(
+        std::launch::async, [&dict_path, &zip, &files]() { return write_media(dict_path, zip, files.media_files); });
 
-    std::ofstream blobs(path + "/blobs.bin", std::ios::binary);
+    const std::vector<char> zstd_dict = train_zstd_dict(zip, files, low_ram);
+    std::unique_ptr<ZSTD_CDict, decltype(&ZSTD_freeCDict)> cdict(nullptr, ZSTD_freeCDict);
+    if (!zstd_dict.empty()) {
+      cdict.reset(ZSTD_createCDict(zstd_dict.data(), zstd_dict.size(), 0));
+
+      std::ofstream dict_file(dict_path / "dict.zstd", std::ios::binary);
+      setup_stream_exceptions(dict_file);
+      dict_file.write(zstd_dict.data(), static_cast<std::streamsize>(zstd_dict.size()));
+    }
+
+    std::ofstream blobs(dict_path / "blobs.bin", std::ios::binary);
     setup_stream_exceptions(blobs);
     std::vector<std::pair<uint64_t, uint64_t>> offsets;
     uint64_t write_offset = 0;
-    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram);
+    write_terms(blobs, offsets, zip, files.term_banks, write_offset, result, low_ram, cdict.get());
     write_meta(blobs, offsets, zip, files.meta_banks, write_offset, result, low_ram);
+    write_kanji(blobs, offsets, zip, files.kanji_banks, write_offset, result, low_ram);
+    count_unprocessed_banks(zip, files, result);
     if (offsets.empty()) {
       throw std::runtime_error("empty dictionary");
     }
@@ -590,31 +821,51 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     auto offset_buf = build_offset_index(offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
-    auto hash_thread = std::async(std::launch::async, [&hash_entries, &path]() {
+    auto hash_thread = std::async(std::launch::async, [&hash_entries, &dict_path]() {
       hash::linear table;
-      table.build_to_file(hash_entries, path + "/hash.table");
+      table.build_to_file(hash_entries, dict_path / "hash.table");
       auto hashes = hash_entries | std::views::keys | std::ranges::to<std::vector>();
-      hash::bloom::build_to_file(hashes, path + "/bloom.filter");
+      hash::bloom::build_to_file(hashes, dict_path / "bloom.filter");
     });
 
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
     hash_thread.get();
 
-    result.media_count = media_thread.get();
+    result.summary.counts.media.total = media_thread.get();
 
-    std::ofstream sui(path + "/.hoshidicts_3", std::ios::binary);
-    setup_stream_exceptions(sui);
-    sui.close();
-    std::filesystem::remove(path + "/.hoshidicts_1");
-    std::filesystem::remove(path + "/.hoshidicts_2");
+    std::string summary_json;
+    if (glz::write_json(result.summary, summary_json)) {
+      throw std::runtime_error("failed to write index.json");
+    }
+    std::ofstream index_file(dict_path / "index.json", std::ios::binary);
+    setup_stream_exceptions(index_file);
+    index_file.write(summary_json.data(), static_cast<std::streamsize>(summary_json.size()));
+
+    const std::filesystem::path marker = dict_path / (zstd_dict.empty() ? ".hoshidicts_3" : ".hoshidicts_4");
+    std::ofstream marker_file(marker, std::ios::binary);
+    setup_stream_exceptions(marker_file);
+    marker_file.close();
+    for (int version = 1; version <= 4; ++version) {
+      const auto candidate = dict_path / (".hoshidicts_" + std::to_string(version));
+      if (candidate != marker) {
+        std::filesystem::remove(candidate);
+      }
+    }
+    if (zstd_dict.empty()) {
+      std::filesystem::remove(dict_path / "dict.zstd");
+    }
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;
-    result.errors.emplace_back(e.what());
+    if (!result.summary.title.empty()) {
+      result.summary.importSuccess = false;
+    }
+    result.error = e.what();
   }
 
-  if (!result.success && !result.title.empty()) {
-    std::filesystem::remove_all(std::filesystem::path(output_dir) / result.title);
+  if (!result.success && !dict_path.empty()) {
+    std::error_code error;
+    std::filesystem::remove_all(dict_path, error);
   }
 
   return result;

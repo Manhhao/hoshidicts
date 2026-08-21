@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "../src/path_utils.hpp"
 #include "hoshidicts/importer.hpp"
 #include "hoshidicts/language.hpp"
 #include "hoshidicts/lookup.hpp"
@@ -51,11 +52,12 @@ void print_usage(const char* program) {
   std::cout << std::format("{} query <path/to/dictionary> <word>\n", program);
   std::cout << std::format("{} lookup <language> <path/to/dictionary>... <lookup_string>\n", program);
   std::cout << std::format("{} freq <path/to/dictionary> <word>\n", program);
+  std::cout << std::format("{} kanji <path/to/dictionary> <kanji>\n", program);
 }
 
 void cmd_import(const std::string& path) {
-  std::filesystem::path zip_path(path);
-  std::string output_dir = zip_path.parent_path().string();
+  std::filesystem::path zip_path = path_utils::from_utf8(path);
+  std::string output_dir = path_utils::to_utf8(zip_path.parent_path());
   if (output_dir.empty()) {
     output_dir = ".";
   }
@@ -63,16 +65,15 @@ void cmd_import(const std::string& path) {
 
   if (result.success) {
     std::cout << std::format("title: {}\n", result.title);
-    std::cout << std::format("term_count: {}\n", result.term_count);
-    std::cout << std::format("meta_count: {}\n", result.meta_count);
-    std::cout << std::format("freq_count: {}\n", result.freq_count);
-    std::cout << std::format("pitch_count: {}\n", result.pitch_count);
-    std::cout << std::format("media_count: {}\n", result.media_count);
+    std::cout << std::format("term_count: {}\n", result.summary.counts.terms.total);
+    std::cout << std::format("meta_count: {}\n", result.summary.counts.termMeta["total"]);
+    std::cout << std::format("freq_count: {}\n", result.summary.counts.termMeta["freq"]);
+    std::cout << std::format("pitch_count: {}\n",
+                             result.summary.counts.termMeta["pitch"] + result.summary.counts.termMeta["ipa"]);
+    std::cout << std::format("kanji_count: {}\n", result.summary.counts.kanji.total);
+    std::cout << std::format("media_count: {}\n", result.summary.counts.media.total);
   } else {
-    std::cout << std::format("could not import dictionary:\n");
-    for (const auto& error : result.errors) {
-      std::cout << std::format(" {}\n", error);
-    }
+    std::cout << std::format("could not import dictionary: {}\n", result.error);
   }
 }
 
@@ -144,6 +145,33 @@ void cmd_freq(const std::string& path, const std::string& expression, const std:
   std::cout << std::format("count: {}\n", count);
 }
 
+void cmd_kanji(const std::string& path, const std::string& kanji) {
+  DictionaryQuery query;
+  query.add_kanji_dict(path);
+  auto result = query.query_kanji(kanji);
+
+  std::cout << std::format("kanji result for: {}\n", kanji);
+  std::cout << std::format("{} entries\n", result.entries.size());
+
+  for (const auto& e : result.entries) {
+    std::cout << std::format("---------------------------------------------------------------\n");
+    std::cout << std::format("dict: {}\n", e.dict_name);
+    std::cout << std::format("onyomi: {}\n", e.onyomi);
+    std::cout << std::format("kunyomi: {}\n", e.kunyomi);
+    std::cout << std::format("tags: {}\n", e.tags);
+    std::cout << std::format("definitions:\n");
+    for (const auto& def : e.definitions) {
+      std::cout << std::format("  - {}\n", def);
+    }
+    if (!e.stats.empty()) {
+      std::cout << std::format("stats:\n");
+      for (const auto& [k, v] : e.stats) {
+        std::cout << std::format("  {}: {}\n", k, v);
+      }
+    }
+  }
+}
+
 void cmd_lookup(const std::string& language_id, const std::vector<std::string>& db_paths,
                 const std::string& lookup_string, int max_results = 8, int scan_length = 16) {
   DictionaryQuery dict_query;
@@ -205,6 +233,8 @@ int main(int argc, char* argv[]) {
       cmd_lookup(argv[2], db_paths, term);
     } else if (command == "freq" && argc >= 5) {
       cmd_freq(argv[2], argv[3], argv[4]);
+    } else if (command == "kanji" && argc >= 4) {
+      cmd_kanji(argv[2], argv[3]);
     } else {
       print_usage(argv[0]);
       return 1;

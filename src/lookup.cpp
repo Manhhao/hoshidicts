@@ -6,7 +6,9 @@
 #include <climits>
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <ranges>
+#include <set>
 #include <sstream>
 #include <tuple>
 #include <utility>
@@ -15,6 +17,13 @@ namespace {
 using HeadwordKey = std::pair<std::string, std::string>;
 using LookupResultKey = HeadwordKey;
 using TraceSortKey = std::tuple<int, size_t, bool>;
+using DictionaryRedirectKey = std::tuple<std::string, std::vector<std::string>, int, TraceSource,
+                                         std::vector<std::pair<std::string, std::string>>>;
+
+// Redirect graphs are untrusted dictionary data and can contain cycles or exponentially many paths.
+constexpr size_t kMaxDictionaryRedirectCandidates = 4096;
+constexpr size_t kMaxDictionaryRedirectDepth = 32;
+constexpr size_t kMaxDictionaryRedirectBranches = 64;
 
 struct EffectivePosConditions {
   bool missing;
@@ -25,6 +34,21 @@ struct TermMetadata {
   std::vector<FrequencyEntry> frequencies;
   std::vector<PitchEntry> pitches;
 };
+
+struct DictionaryRedirectResult {
+  DeinflectionResult deinflection;
+  std::vector<std::string> visited;
+};
+
+DictionaryRedirectKey make_dictionary_redirect_key(const DictionaryRedirectResult& result) {
+  const auto& candidate = result.deinflection.trace_candidates.front();
+  std::vector<std::pair<std::string, std::string>> trace;
+  trace.reserve(candidate.trace.size());
+  for (const auto& group : candidate.trace) {
+    trace.emplace_back(group.name, group.description);
+  }
+  return {result.deinflection.text, result.visited, candidate.preprocessor_steps, candidate.source, std::move(trace)};
+}
 
 std::vector<std::string> split_whitespace(const std::string& str) {
   std::vector<std::string> result;
@@ -90,22 +114,28 @@ void filter_terms_by_pos(const LanguageProcessor& language, std::vector<TermResu
   });
 }
 
-int get_freq_value_for_dict(const TermResult& term, const std::string& dict_name) {
+std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_view dictionary_name, bool descending) {
+  std::optional<int> frequency;
   for (const auto& frequency_entry : term.frequencies) {
-    if (frequency_entry.dict_name != dict_name) {
+    if (frequency_entry.dict_name != dictionary_name || frequency_entry.frequencies.empty()) {
       continue;
     }
 
-    int min_frequency = INT_MAX;
-    for (const auto& frequency : frequency_entry.frequencies) {
-      if (frequency.value >= 0) {
-        min_frequency = std::min(min_frequency, frequency.value);
+    for (const auto& candidate : frequency_entry.frequencies) {
+      if (candidate.value < 0) {
+        continue;
       }
+      frequency = frequency.has_value() ? std::optional<int>(descending ? std::max(*frequency, candidate.value)
+                                                                        : std::min(*frequency, candidate.value))
+                                        : std::optional<int>(candidate.value);
     }
-    return min_frequency;
   }
 
-  return INT_MAX;
+  return frequency;
+}
+
+bool matches_primary_reading(const TermResult& term, std::string_view primary_reading) {
+  return term.reading == primary_reading;
 }
 
 bool is_v2_redirect_only_glossary(const GlossaryEntry& glossary) {
@@ -263,29 +293,46 @@ std::vector<TraceCandidate> make_lookup_trace_candidates(const DeinflectionResul
   return candidates;
 }
 
-void add_dictionary_redirect(std::vector<DeinflectionResult>& results, const DictionaryRedirect& redirect,
-                             const std::vector<TraceCandidate>& source_candidates) {
-  if (redirect.form_of.empty()) {
+void add_dictionary_redirect(std::vector<DictionaryRedirectResult>& results, const DictionaryRedirect& redirect,
+                             const std::vector<TraceCandidate>& source_candidates,
+                             const std::vector<std::string>& visited, std::set<DictionaryRedirectKey>& seen,
+                             size_t& generated_candidates) {
+  if (redirect.form_of.empty() || std::ranges::contains(visited, redirect.form_of) ||
+      visited.size() > kMaxDictionaryRedirectDepth) {
     return;
   }
 
   for (const auto& source_candidate : source_candidates) {
+    if (results.size() >= kMaxDictionaryRedirectBranches || generated_candidates >= kMaxDictionaryRedirectCandidates) {
+      return;
+    }
     TraceCandidate candidate = source_candidate;
     candidate.deinflected = redirect.form_of;
-    candidate.source = candidate.trace.empty() ? TraceSource::Dictionary : TraceSource::Both;
+    candidate.source = candidate.trace.empty() ? TraceSource::Dictionary
+                                               : merge_trace_sources(candidate.source, TraceSource::Dictionary);
     for (const auto& inflection_rule : redirect.inflection_rules) {
       if (!inflection_rule.empty()) {
         candidate.trace.push_back({.name = inflection_rule, .description = ""});
       }
     }
 
-    add_deinflection_candidate(results, redirect.form_of, 0, std::move(candidate));
+    DictionaryRedirectResult result{.deinflection = DeinflectionResult{.text = redirect.form_of, .conditions = 0},
+                                    .visited = visited};
+    result.deinflection.trace_candidates.push_back(std::move(candidate));
+    result.visited.push_back(redirect.form_of);
+    if (seen.insert(make_dictionary_redirect_key(result)).second) {
+      results.push_back(std::move(result));
+      ++generated_candidates;
+    }
   }
 }
 
-std::vector<DeinflectionResult> get_dictionary_deinflections(const std::vector<TermResult>& terms,
-                                                             const std::vector<TraceCandidate>& source_candidates) {
-  std::vector<DeinflectionResult> results;
+std::vector<DictionaryRedirectResult> get_dictionary_deinflections(const std::vector<TermResult>& terms,
+                                                                   const std::vector<TraceCandidate>& source_candidates,
+                                                                   const std::vector<std::string>& visited,
+                                                                   std::set<DictionaryRedirectKey>& seen,
+                                                                   size_t& generated_candidates) {
+  std::vector<DictionaryRedirectResult> results;
 
   for (const auto& term : terms) {
     for (const auto& glossary : term.glossaries) {
@@ -293,7 +340,11 @@ std::vector<DeinflectionResult> get_dictionary_deinflections(const std::vector<T
         continue;
       }
       for (const auto& redirect : glossary.redirects) {
-        add_dictionary_redirect(results, redirect, source_candidates);
+        add_dictionary_redirect(results, redirect, source_candidates, visited, seen, generated_candidates);
+        if (results.size() >= kMaxDictionaryRedirectBranches ||
+            generated_candidates >= kMaxDictionaryRedirectCandidates) {
+          return results;
+        }
       }
     }
   }
@@ -314,7 +365,8 @@ TraceSortKey best_trace_sort_key(const LookupResult& result) {
 
 }
 
-std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length) const {
+std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
+                                         const LookupOptions& options) const {
   std::map<LookupResultKey, LookupResult> result_map;
   std::map<std::string, std::vector<TermResult>> raw_entries_cache;
   std::map<HeadwordKey, TermMetadata> term_metadata_cache;
@@ -418,13 +470,27 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
 
           auto trace_candidates =
               make_lookup_trace_candidates(deinflection, postprocessed.text, variant.steps + postprocessed.steps);
-          const auto dictionary_deinflections = get_dictionary_deinflections(terms, trace_candidates);
+          std::set<DictionaryRedirectKey> seen_dictionary_deinflections;
+          size_t generated_dictionary_deinflections = 0;
+          auto dictionary_deinflections =
+              get_dictionary_deinflections(terms, trace_candidates, {postprocessed.text}, seen_dictionary_deinflections,
+                                           generated_dictionary_deinflections);
+          std::ranges::reverse(dictionary_deinflections);
           add_lookup_terms(search_str, trace_candidates, std::move(terms));
 
-          for (const auto& dictionary_deinflection : dictionary_deinflections) {
-            auto redirected_terms = query_raw_entries_cached(dictionary_deinflection.text);
-            filter_by_pos(redirected_terms, dictionary_deinflection);
-            add_lookup_terms(search_str, dictionary_deinflection.trace_candidates, std::move(redirected_terms));
+          while (!dictionary_deinflections.empty()) {
+            auto dictionary_redirect = std::move(dictionary_deinflections.back());
+            dictionary_deinflections.pop_back();
+            auto redirected_terms = query_raw_entries_cached(dictionary_redirect.deinflection.text);
+            filter_by_pos(redirected_terms, dictionary_redirect.deinflection);
+            auto nested_redirects = get_dictionary_deinflections(
+                redirected_terms, dictionary_redirect.deinflection.trace_candidates, dictionary_redirect.visited,
+                seen_dictionary_deinflections, generated_dictionary_deinflections);
+            for (auto it = nested_redirects.rbegin(); it != nested_redirects.rend(); ++it) {
+              dictionary_deinflections.push_back(std::move(*it));
+            }
+            add_lookup_terms(search_str, dictionary_redirect.deinflection.trace_candidates,
+                             std::move(redirected_terms));
           }
         }
       }
@@ -435,40 +501,87 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   }
 
   auto results = result_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
-  const auto freq_dict_order = query_.get_freq_dict_order();
-  auto middle_iter = std::ranges::next(results.begin(), max_results, results.end());
-  std::ranges::partial_sort(results, middle_iter, [&freq_dict_order](const auto& a, const auto& b) {
-    auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
-    auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
-    if (len_a != len_b) {
-      return len_a > len_b;
-    }
-
-    auto trace_key_a = best_trace_sort_key(a);
-    auto trace_key_b = best_trace_sort_key(b);
-    if (trace_key_a != trace_key_b) {
-      return trace_key_a < trace_key_b;
-    }
-
-    for (const auto& dict_name : freq_dict_order) {
-      const int freq_a = get_freq_value_for_dict(a.term, dict_name);
-      const int freq_b = get_freq_value_for_dict(b.term, dict_name);
-      if (freq_a != freq_b) {
-        return freq_a < freq_b;
+  std::vector<std::string> auto_frequency_dictionaries;
+  std::optional<std::string_view> frequency_dictionary;
+  bool frequency_descending = false;
+  switch (options.frequency_order) {
+    case LookupFrequencyOrder::Auto:
+      auto_frequency_dictionaries = query_.get_freq_dict_order();
+      break;
+    case LookupFrequencyOrder::Ascending:
+    case LookupFrequencyOrder::Descending:
+      if (options.frequency_dictionary.has_value()) {
+        const auto selected =
+            std::ranges::find(query_.freq_dicts_, *options.frequency_dictionary, &DictionaryQuery::Dictionary::name);
+        if (selected != query_.freq_dicts_.end()) {
+          frequency_dictionary = selected->name;
+          frequency_descending = options.frequency_order == LookupFrequencyOrder::Descending;
+        }
       }
-    }
+      break;
+    case LookupFrequencyOrder::Disabled:
+      break;
+  }
+  std::string_view primary_reading;
+  if (options.primary_reading.has_value()) {
+    primary_reading = *options.primary_reading;
+  }
+  const size_t retained_count = max_results <= 0 ? 0 : std::min(results.size(), static_cast<size_t>(max_results));
+  auto middle_iter = std::ranges::next(results.begin(), static_cast<std::ptrdiff_t>(retained_count));
+  std::ranges::partial_sort(
+      results, middle_iter,
+      [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending, primary_reading](const auto& a,
+                                                                                                  const auto& b) {
+        if (!primary_reading.empty()) {
+          const bool primary_a = matches_primary_reading(a.term, primary_reading);
+          const bool primary_b = matches_primary_reading(b.term, primary_reading);
+          if (primary_a != primary_b) {
+            return primary_a;
+          }
+        }
 
-    if (a.term.score != b.term.score) {
-      return a.term.score > b.term.score;
-    }
+        auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
+        auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
+        if (len_a != len_b) {
+          return len_a > len_b;
+        }
 
-    auto a_reading_expr_match = a.term.expression == a.term.reading;
-    auto b_reading_expr_match = b.term.expression == b.term.reading;
-    return a_reading_expr_match > b_reading_expr_match;
-  });
+        const auto trace_key_a = best_trace_sort_key(a);
+        const auto trace_key_b = best_trace_sort_key(b);
+        if (trace_key_a != trace_key_b) {
+          return trace_key_a < trace_key_b;
+        }
 
-  if (results.size() > static_cast<size_t>(max_results)) {
-    results.resize(max_results);
+        for (const auto& dictionary_name : auto_frequency_dictionaries) {
+          const int freq_a = get_freq_value_for_dict(a.term, dictionary_name, false).value_or(INT_MAX);
+          const int freq_b = get_freq_value_for_dict(b.term, dictionary_name, false).value_or(INT_MAX);
+          if (freq_a != freq_b) {
+            return freq_a < freq_b;
+          }
+        }
+
+        if (frequency_dictionary.has_value()) {
+          const auto freq_a = get_freq_value_for_dict(a.term, *frequency_dictionary, frequency_descending);
+          const auto freq_b = get_freq_value_for_dict(b.term, *frequency_dictionary, frequency_descending);
+          if (freq_a.has_value() != freq_b.has_value()) {
+            return freq_a.has_value();
+          }
+          if (freq_a.has_value() && *freq_a != *freq_b) {
+            return frequency_descending ? *freq_a > *freq_b : *freq_a < *freq_b;
+          }
+        }
+
+        if (a.term.score != b.term.score) {
+          return a.term.score > b.term.score;
+        }
+
+        auto a_reading_expr_match = a.term.expression == a.term.reading;
+        auto b_reading_expr_match = b.term.expression == b.term.reading;
+        return a_reading_expr_match > b_reading_expr_match;
+      });
+
+  if (results.size() > retained_count) {
+    results.resize(retained_count);
   }
 
   for (auto& r : results) {

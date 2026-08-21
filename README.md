@@ -4,13 +4,17 @@ This library implements a dictionary backend that works similarly to [Yomitan](h
 
 A MIT version of the library is available on the [main-mit](https://github.com/Manhhao/hoshidicts/tree/main-mit) branch.
 
+## Build
+
+The library is built by default. Enable the optional command-line tools with `-DHOSHIDICTS_CLI=ON` and the import/lookup benchmarks with `-DHOSHIDICTS_BENCHMARK=ON`; both options default to `OFF`.
+
 ## Reference
 
 ### importer
 ```cpp
 ImportResult dictionary_importer::import(const std::string& zip_path, const std::string& output_dir, bool low_ram = false)
 ```
-Imports a Yomitan `.zip` dictionary file into a custom format. The resulting folder is stored in `output_dir/<dict_title>`. Glossaries are compressed using zstd. Term, frequency and pitch dictionaries are generally supported, but only a small part of the pitch accent spec was implemented. Setting `low_ram` to `true` can reduce memory usage significantly at the cost of slightly lower import speed.
+Imports a Yomitan `.zip` dictionary file into a custom format. The resulting folder is stored in `output_dir/<dict_title>`. Glossaries are compressed using zstd, optionally with a trained compression dictionary. Term, frequency, pitch, kanji, media, and tag banks are supported. Setting `low_ram` to `true` reduces import concurrency.
 
 ### query
 ```cpp
@@ -27,6 +31,11 @@ Adds an imported frequency dictionary to the query.
 void DictionaryQuery::add_pitch_dict(const std::string& path)
 ```
 Adds an imported pitch dictionary to the query.
+
+```cpp
+void DictionaryQuery::add_kanji_dict(const std::string& path)
+```
+Adds an imported kanji dictionary to the query. Use `query_kanji` to retrieve its entries.
 
 ```cpp
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const
@@ -76,11 +85,11 @@ Lookup::Lookup(DictionaryQuery& query, const LanguageProcessor& language)
 Creates a Lookup object using a given query with dictionaries added and a language pipeline.
 
 ```cpp
-std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results = 16, size_t scan_length = 16) const
+std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results = 16, size_t scan_length = 16, const LookupOptions& options = {}) const
 ```
 Follows a parsing strategy similar to Yomitan. Substrings of `lookup_string` are tested from length `scan_length` down to 1. Each substring is preprocessed, deinflected, postprocessed, then queried using the query object.
 
-Results are filtered by part-of-speech tags defined in dictionaries, or added directly if none are present. The results are sorted by matched length first, then by preprocessing steps, then deinflection trace length and finally by frequency.
+Results are filtered by language-specific part-of-speech rules. Ranking considers the requested primary reading, matched length, the best preprocessing/deinflection trace, configurable frequency ordering, Yomitan score, and reading/expression equality.
 
 ## Acknowledgements
 
@@ -91,6 +100,8 @@ Results are filtered by part-of-speech tags defined in dictionaries, or added di
 - [zstd](https://github.com/facebook/zstd): BSD
 - [utfcpp](https://github.com/nemtrif/utfcpp): BSL-1.0
 - [unordered_dense](https://github.com/martinus/unordered_dense.git): MIT
+- [utf8proc](https://github.com/JuliaStrings/utf8proc): MIT
+- [kanji-processor](https://github.com/yomidevs/kanji-processor): MIT
 
 ## License
 hoshidicts (main) is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
