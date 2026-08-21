@@ -1,10 +1,11 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <unordered_map>
 
 #if defined(__clang__) && defined(__APPLE__)
 #define SWIFT_IMPORT_UNSAFE __attribute__((swift_attr("import_unsafe")))
@@ -27,6 +28,11 @@ struct MediaFileView {
   size_t size;
 };
 
+struct DictionaryRedirect {
+  std::string form_of;
+  std::vector<std::string> inflection_rules;
+};
+
 struct ZSTD_DDict_s;
 
 struct GlossaryEntry {
@@ -37,6 +43,8 @@ struct GlossaryEntry {
   const uint8_t* compressed_data = nullptr;
   uint32_t compressed_size = 0;
   const ZSTD_DDict_s* zstd_dict = nullptr;
+  std::vector<DictionaryRedirect> redirects;
+  uint8_t dictionary_format_version = 1;
 };
 
 struct FrequencyEntry {
@@ -96,6 +104,10 @@ class DictionaryQuery {
   void add_freq_dict(const std::string& path);
   void add_pitch_dict(const std::string& path);
   void add_kanji_dict(const std::string& path);
+  bool try_add_term_dict(const std::string& path);
+  bool try_add_freq_dict(const std::string& path);
+  bool try_add_pitch_dict(const std::string& path);
+  bool try_add_kanji_dict(const std::string& path);
 
   void query_freq(std::vector<TermResult>& terms) const;
   void query_pitch(std::vector<TermResult>& terms) const;
@@ -112,6 +124,9 @@ class DictionaryQuery {
  private:
   friend class Lookup;
   std::vector<TermResult> query_raw(const std::string& expression) const;
+  std::vector<TermResult> query_raw_entries(const std::string& expression) const;
+  static std::vector<TermResult> merge_term_entries(std::vector<TermResult> terms);
+  void order_glossaries(std::vector<GlossaryEntry>& glossaries) const;
   void materialize(TermResult& term) const;
 
   struct DictionaryData;
@@ -131,7 +146,7 @@ class DictionaryQuery {
   };
   enum DictionaryType : uint8_t { TERM, FREQ, PITCH, KANJI };
 
-  void add_dict(const std::string& path, DictionaryType);
+  bool add_dict(const std::string& path, DictionaryType);
 
   static std::string decompress_glossary(const void* data, size_t size, const ZSTD_DDict_s* dict);
   std::vector<Dictionary> term_dicts_;

@@ -34,6 +34,7 @@ const char* hd_import_result_error(const hd_import_result* r);
 typedef struct hd_deinflector hd_deinflector;
 
 hd_deinflector* hd_deinflector_new(void);
+hd_deinflector* hd_deinflector_new_for_language(const char* language_id);
 void hd_deinflector_free(hd_deinflector* d);
 
 // query
@@ -57,11 +58,19 @@ typedef struct hd_media_file {
   size_t size;
 } hd_media_file;
 
+typedef struct hd_dictionary_redirect {
+  hd_str form_of;
+  const hd_str* inflection_rules;
+  size_t inflection_rules_count;
+} hd_dictionary_redirect;
+
 typedef struct hd_glossary_entry {
   hd_str dict_name;
   hd_str glossary;
   hd_str definition_tags;
   hd_str term_tags;
+  const hd_dictionary_redirect* redirects;
+  size_t redirects_count;
 } hd_glossary_entry;
 
 typedef struct hd_frequency_entry {
@@ -146,6 +155,20 @@ typedef struct hd_transform_group {
   hd_str description;
 } hd_transform_group;
 
+typedef enum hd_trace_source {
+  HD_TRACE_SOURCE_ALGORITHM = 0,
+  HD_TRACE_SOURCE_DICTIONARY = 1,
+  HD_TRACE_SOURCE_BOTH = 2,
+} hd_trace_source;
+
+typedef struct hd_trace_candidate {
+  hd_str deinflected;
+  int32_t preprocessor_steps;
+  int32_t source;
+  const hd_transform_group* trace;
+  size_t trace_count;
+} hd_trace_candidate;
+
 typedef struct hd_lookup_result {
   hd_str matched;
   hd_str deinflected;
@@ -153,6 +176,8 @@ typedef struct hd_lookup_result {
   size_t trace_count;
   hd_term_result term;
   int32_t preprocessor_steps;
+  const hd_trace_candidate* trace_candidates;
+  size_t trace_candidates_count;
 } hd_lookup_result;
 
 typedef enum hd_lookup_frequency_order {

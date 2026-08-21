@@ -1,9 +1,35 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "hoshidicts_c.h"
+
+static double monotonic_milliseconds(void) {
+#ifdef _WIN32
+  LARGE_INTEGER frequency;
+  LARGE_INTEGER counter;
+  if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&counter)) {
+    return 0.0;
+  }
+  return (double)counter.QuadPart * 1000.0 / (double)frequency.QuadPart;
+#else
+  struct timespec value;
+  if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+    return 0.0;
+  }
+  return (double)value.tv_sec * 1000.0 + (double)value.tv_nsec / 1e6;
+#endif
+}
 
 static void print_usage(const char* program) {
   printf("Usage:\n");
@@ -24,14 +50,34 @@ static size_t utf8_length(const char* text) {
 }
 
 static int cmd_import(const char* path) {
-  char output_dir[256] = ".";
   const char* parent = strrchr(path, '/');
-  if (parent) {
-    memcpy(output_dir, path, parent - path);
-    output_dir[parent - path] = '\0';
+#ifdef _WIN32
+  const char* backslash = strrchr(path, '\\');
+  if (parent == NULL || (backslash != NULL && backslash > parent)) {
+    parent = backslash;
+  }
+#endif
+  char* output_dir = NULL;
+  if (parent != NULL) {
+    size_t length = (size_t)(parent - path);
+#ifdef _WIN32
+    if (length == 0 || (length == 2 && path[1] == ':')) {
+#else
+    if (length == 0) {
+#endif
+      length++;
+    }
+    output_dir = malloc(length + 1);
+    if (output_dir == NULL) {
+      printf("failed to allocate output path\n");
+      return 1;
+    }
+    memcpy(output_dir, path, length);
+    output_dir[length] = '\0';
   }
 
-  hd_import_result* ir = hd_import(path, output_dir, false);
+  hd_import_result* ir = hd_import(path, output_dir == NULL ? "." : output_dir, false);
+  free(output_dir);
   if (ir == NULL) {
     printf("failed to import dictionary\n");
     return 1;
@@ -206,9 +252,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  struct timespec t0;
-  struct timespec t1;
-  clock_gettime(CLOCK_MONOTONIC, &t0);
+  double start_ms = monotonic_milliseconds();
   int ret;
 
   const char* command = argv[1];
@@ -225,8 +269,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  clock_gettime(CLOCK_MONOTONIC, &t1);
-  double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+  double ms = monotonic_milliseconds() - start_ms;
   printf("runtime: %.2fms\n", ms);
   return ret;
 }

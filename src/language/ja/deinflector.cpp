@@ -1,16 +1,24 @@
 // rules and descriptions adopted from
 // https://github.com/yomidevs/yomitan/blob/master/ext/js/language/ja/japanese-transforms.js
-#include "hoshidicts/deinflector.hpp"
+#include "deinflector.hpp"
 
 #include <utf8.h>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
-Deinflector::Deinflector() : max_length_(0) { init_transforms(); }
+#include "conditions.hpp"
+
+language::ja::JapaneseDeinflector::JapaneseDeinflector() : max_length_(0) { init_transforms(); }
 
 namespace {
+
 constexpr std::string_view shimau_english_description =
     "1. Shows a sense of regret/surprise when you did have volition in doing something, but it turned out to be bad to "
     "do.\n"
@@ -37,10 +45,47 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 3> fu_verb_t
     {"たまう", "たもう"},
     {"たゆたう", "たゆとう"},
 }};
+
+bool traces_equal(const std::vector<TransformGroup>& a, const std::vector<TransformGroup>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].name != b[i].name) {
+      return false;
+    }
+  }
+  return true;
 }
 
-void Deinflector::add_irregular(std::string_view suffix, uint32_t conditions_in, uint32_t conditions_out,
-                                int group_id) {
+void add_deinflection_result(std::vector<DeinflectionResult>& results, const std::string& text, uint32_t conditions,
+                             const std::vector<TransformGroup>& trace) {
+  TraceCandidate candidate{
+      .deinflected = text, .preprocessor_steps = 0, .source = TraceSource::Algorithm, .trace = trace};
+
+  auto it = std::ranges::find_if(results, [&](const DeinflectionResult& result) {
+    return result.text == text && result.conditions == conditions;
+  });
+  if (it == results.end()) {
+    DeinflectionResult result{.text = text, .conditions = conditions};
+    result.trace_candidates.push_back(std::move(candidate));
+    results.push_back(std::move(result));
+    return;
+  }
+
+  const bool duplicate = std::ranges::any_of(it->trace_candidates, [&](const TraceCandidate& existing) {
+    return traces_equal(existing.trace, candidate.trace);
+  });
+  if (!duplicate) {
+    it->trace_candidates.push_back(std::move(candidate));
+  }
+}
+
+}
+
+void language::ja::JapaneseDeinflector::add_irregular(std::string_view suffix, uint32_t conditions_in,
+                                                      uint32_t conditions_out, int group_id) {
   for (auto [verb, prefix] : iku_verbs) {
     add_rule({
         .from = std::string(prefix) + std::string(suffix),
@@ -72,7 +117,7 @@ void Deinflector::add_irregular(std::string_view suffix, uint32_t conditions_in,
   }
 }
 
-void Deinflector::init_transforms() {
+void language::ja::JapaneseDeinflector::init_transforms() {
   int id =
       add_group({.name = "-ば",
                  .description = "1. Conditional form; shows that the previous stated condition\'s establishment is the "
@@ -1247,57 +1292,38 @@ void Deinflector::init_transforms() {
   add_rule({.from = "來やがる", .to = "來る", .conditions_in = V5, .conditions_out = VK, .group_id = id});
 }
 
-int Deinflector::add_group(const TransformGroup& group) {
+int language::ja::JapaneseDeinflector::add_group(const TransformGroup& group) {
   auto id = static_cast<int>(groups_.size());
   groups_.emplace_back(group);
   return id;
 }
 
-void Deinflector::add_rule(const Rule& rule) {
+void language::ja::JapaneseDeinflector::add_rule(const Rule& rule) {
   transforms_[rule.from].emplace_back(rule);
   max_length_ = std::max<size_t>(utf8::distance(rule.from.begin(), rule.from.end()), max_length_);
 }
 
-std::vector<DeinflectionResult> Deinflector::deinflect(const std::string& text) const {
+std::vector<DeinflectionResult> language::ja::JapaneseDeinflector::deinflect(const std::string& text) const {
   std::vector<DeinflectionResult> result{};
   std::vector<TransformGroup> trace{};
   size_t text_len = utf8::distance(text.begin(), text.end());
   if (text_len > 1) {
     deinflect_recursive(text, NONE, trace, result);
   } else {
-    result.emplace_back(text, NONE, trace);
+    add_deinflection_result(result, text, NONE, trace);
   }
 
   return result;
 }
 
-uint32_t Deinflector::pos_to_conditions(const std::vector<std::string>& part_of_speech) {
-  uint32_t result = 0;
-  for (const auto& p : part_of_speech) {
-    if (p == "v1") {
-      result |= V1;
-    } else if (p == "v5") {
-      result |= V5;
-    } else if (p == "vk") {
-      result |= VK;
-    } else if (p == "vs") {
-      result |= VS;
-    } else if (p == "vz") {
-      result |= VZ;
-    } else if (p == "adj-i") {
-      result |= ADJ_I;
-    }
-  }
-  return result;
-}
-
-void Deinflector::deinflect_recursive(const std::string& text, uint32_t conditions, std::vector<TransformGroup>& trace,
-                                      std::vector<DeinflectionResult>& results) const {
+void language::ja::JapaneseDeinflector::deinflect_recursive(const std::string& text, uint32_t conditions,
+                                                            std::vector<TransformGroup>& trace,
+                                                            std::vector<DeinflectionResult>& results) const {
   size_t text_len = utf8::distance(text.begin(), text.end());
   if (text_len <= 1) {
     return;
   }
-  results.emplace_back(text, conditions, trace);
+  add_deinflection_result(results, text, conditions, trace);
 
   size_t start = std::min(max_length_, text_len);
   auto prefix_it = text.begin();
@@ -1325,4 +1351,13 @@ void Deinflector::deinflect_recursive(const std::string& text, uint32_t conditio
       utf8::next(prefix_it, text.end());
     }
   }
+}
+
+namespace language::ja {
+
+std::vector<DeinflectionResult> deinflect(const std::string& text) {
+  static const JapaneseDeinflector deinflector;
+  return deinflector.deinflect(text);
+}
+
 }

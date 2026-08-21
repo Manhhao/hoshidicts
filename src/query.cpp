@@ -9,9 +9,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <ranges>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "hash/hash.hpp"
@@ -42,7 +44,7 @@ ZSTD_DCtx* thread_dctx() {
 }
 
 struct DictionaryQuery::DictionaryData {
-  int version;
+  uint8_t format_version = 1;
   hash::linear table;
   hash::bloom bloom;
   memory::mapped_file blobs;
@@ -74,30 +76,30 @@ DictionaryQuery::Dictionary::~Dictionary() = default;
 DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
-void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
+bool DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
   const std::filesystem::path path = path_utils::from_utf8(path_utf8);
-  int version = 0;
+  uint8_t format_version = 0;
   if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
-    version = 4;
+    format_version = 4;
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
-    version = 3;
+    format_version = 3;
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_2")) {
-    version = 2;
+    format_version = 2;
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_1")) {
-    version = 1;
+    format_version = 1;
   } else {
-    return;
+    return false;
   }
 
   Dictionary dict;
   Summary summary;
   std::ifstream index_file(path / "index.json", std::ios::binary);
   if (!index_file) {
-    return;
+    return false;
   }
   std::string buf(std::istreambuf_iterator<char>(index_file), {});
   if (glz::read<glz::opts{.error_on_unknown_keys = false}>(summary, buf)) {
-    return;
+    return false;
   }
 
   dict.name = summary.title.empty() ? path_utils::to_utf8(path.stem()) : summary.title;
@@ -108,28 +110,28 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
   }
 
   dict.data = std::make_unique<DictionaryData>();
-  dict.data->version = version;
+  dict.data->format_version = format_version;
 
   dict.data->hash_table = memory::map_rd(path / "hash.table");
   if (!dict.data->hash_table) {
-    return;
+    return false;
   }
   if (!dict.data->table.load(dict.data->hash_table.data, dict.data->hash_table.size)) {
-    return;
+    return false;
   }
 
   dict.data->bloom_filter = memory::map_rd(path / "bloom.filter");
   if (!dict.data->bloom_filter) {
-    return;
+    return false;
   }
   if (!dict.data->bloom.load(dict.data->bloom_filter.data, dict.data->bloom_filter.size)) {
-    return;
+    return false;
   }
   dict.data->table.set_bloom(&dict.data->bloom);
 
   dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
-    return;
+    return false;
   }
 
   dict.data->media = memory::map_rd(path / "media.bin");
@@ -137,10 +139,19 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
     dict.data->media_index = memory::map_rd(path / "media.idx");
   }
 
-  if (version >= 4) {
+  if (format_version >= 4) {
     std::ifstream f(path / "dict.zstd", std::ios::binary);
+    if (!f) {
+      return false;
+    }
     const std::string blob(std::istreambuf_iterator<char>(f), {});
+    if (blob.empty()) {
+      return false;
+    }
     dict.data->zstd_dict = ZSTD_createDDict(blob.data(), blob.size());
+    if (dict.data->zstd_dict == nullptr) {
+      return false;
+    }
   }
 
   switch (type) {
@@ -157,6 +168,7 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
       kanji_dicts_.push_back(std::move(dict));
       break;
   }
+  return true;
 }
 
 void DictionaryQuery::add_term_dict(const std::string& path) { add_dict(path, DictionaryQuery::DictionaryType::TERM); }
@@ -171,6 +183,22 @@ void DictionaryQuery::add_kanji_dict(const std::string& path) {
   add_dict(path, DictionaryQuery::DictionaryType::KANJI);
 }
 
+bool DictionaryQuery::try_add_term_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::TERM);
+}
+
+bool DictionaryQuery::try_add_freq_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::FREQ);
+}
+
+bool DictionaryQuery::try_add_pitch_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::PITCH);
+}
+
+bool DictionaryQuery::try_add_kanji_dict(const std::string& path) {
+  return add_dict(path, DictionaryQuery::DictionaryType::KANJI);
+}
+
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
   auto results = query_raw(expression);
   for (auto& term : results) {
@@ -180,7 +208,15 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 }
 
 std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
-  std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
+  auto results = merge_term_entries(query_raw_entries(expression));
+  query_freq(results);
+  query_pitch(results);
+
+  return results;
+}
+
+std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& expression) const {
+  std::vector<TermResult> results;
   for (const auto& [name, styles, data] : term_dicts_) {
     uint64_t offset_addr = data->table(expression);
     if (offset_addr == 0) {
@@ -221,58 +257,88 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
       auto term_tag_size = read_val<uint8_t>(blob_addr);
       std::string_view term_tags = read_str(blob_addr, term_tag_size);
 
-      if (data->version >= 2) {
-        auto redirect_count = read_val<uint32_t>(blob_addr);
-        for (uint32_t r = 0; r < redirect_count; r++) {
-          auto form_of_len = read_val<uint32_t>(blob_addr);
-          read_str(blob_addr, form_of_len);
-          auto rule_count = read_val<uint32_t>(blob_addr);
-          for (uint32_t j = 0; j < rule_count; j++) {
-            auto rule_len = read_val<uint32_t>(blob_addr);
-            read_str(blob_addr, rule_len);
-          }
-        }
-      }
-
-      int score = 0;
-      if (data->version >= 3) {
-        score = read_val<int32_t>(blob_addr);
-      }
-
       GlossaryEntry entry;
       entry.dict_name = name;
       entry.definition_tags = definition_tags;
       entry.term_tags = term_tags;
       entry.compressed_data = data->blobs.data + glossary_offset;
       entry.compressed_size = glossary_size;
+      entry.dictionary_format_version = data->format_version;
       entry.zstd_dict = data->zstd_dict;
 
-      auto [it, inserted] = term_map.try_emplace({expr, reading});
-      if (inserted) {
-        it->second = {.expression = std::string(expr),
-                      .reading = std::string(reading),
-                      .rules = std::string(rules),
-                      .score = score,
-                      .glossaries = {},
-                      .frequencies = {}};
-      } else {
-        if (!rules.empty()) {
-          if (!it->second.rules.empty()) {
-            it->second.rules += " ";
+      if (data->format_version >= 2) {
+        const auto redirect_count = read_val<uint32_t>(blob_addr);
+        entry.redirects.reserve(redirect_count);
+        for (uint32_t redirect_index = 0; redirect_index < redirect_count; ++redirect_index) {
+          auto form_of_len = read_val<uint32_t>(blob_addr);
+          auto form_of = read_str(blob_addr, form_of_len);
+
+          auto inflection_rule_count = read_val<uint32_t>(blob_addr);
+          std::vector<std::string> inflection_rules;
+          inflection_rules.reserve(inflection_rule_count);
+          for (uint32_t rule_index = 0; rule_index < inflection_rule_count; ++rule_index) {
+            auto rule_len = read_val<uint32_t>(blob_addr);
+            inflection_rules.emplace_back(read_str(blob_addr, rule_len));
           }
-          it->second.rules += rules;
+
+          entry.redirects.push_back(
+              DictionaryRedirect{.form_of = std::string(form_of), .inflection_rules = std::move(inflection_rules)});
         }
-        it->second.score = std::max(it->second.score, score);
       }
-      it->second.glossaries.push_back(std::move(entry));
+
+      int score = 0;
+      if (data->format_version >= 3) {
+        score = read_val<int32_t>(blob_addr);
+      }
+
+      results.push_back({.expression = std::string(expr),
+                         .reading = std::string(reading),
+                         .rules = std::string(rules),
+                         .score = score,
+                         .glossaries = {std::move(entry)},
+                         .frequencies = {}});
     }
   }
 
-  auto results = term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
-  query_freq(results);
-  query_pitch(results);
-
   return results;
+}
+
+std::vector<TermResult> DictionaryQuery::merge_term_entries(std::vector<TermResult> terms) {
+  std::map<std::pair<std::string, std::string>, TermResult> term_map;
+  for (auto& term : terms) {
+    auto key = std::make_pair(term.expression, term.reading);
+    auto [it, inserted] = term_map.try_emplace(std::move(key));
+    if (inserted) {
+      it->second = std::move(term);
+      continue;
+    }
+
+    if (!term.rules.empty()) {
+      if (!it->second.rules.empty()) {
+        it->second.rules += " ";
+      }
+      it->second.rules += term.rules;
+    }
+    it->second.glossaries.insert(it->second.glossaries.end(), std::make_move_iterator(term.glossaries.begin()),
+                                 std::make_move_iterator(term.glossaries.end()));
+    it->second.score = std::max(it->second.score, term.score);
+  }
+
+  return term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
+}
+
+void DictionaryQuery::order_glossaries(std::vector<GlossaryEntry>& glossaries) const {
+  std::unordered_map<std::string_view, size_t> dictionary_order;
+  dictionary_order.reserve(term_dicts_.size());
+  for (size_t i = 0; i < term_dicts_.size(); ++i) {
+    dictionary_order.try_emplace(term_dicts_[i].name, i);
+  }
+
+  const auto rank = [&](const GlossaryEntry& glossary) {
+    const auto it = dictionary_order.find(glossary.dict_name);
+    return it == dictionary_order.end() ? term_dicts_.size() : it->second;
+  };
+  std::ranges::stable_sort(glossaries, {}, rank);
 }
 
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
@@ -484,6 +550,9 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size, 
 
 void DictionaryQuery::materialize(TermResult& term) const {
   for (auto& g : term.glossaries) {
+    if (!g.glossary.empty()) {
+      continue;
+    }
     g.glossary = decompress_glossary(g.compressed_data, g.compressed_size, g.zstd_dict);
   }
 }
