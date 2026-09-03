@@ -8,6 +8,7 @@
 
 #include "../src/path_utils.hpp"
 #include "../src/text_processor/text_processor.hpp"
+#include "hoshidicts/container.hpp"
 #include "hoshidicts/deinflector.hpp"
 #include "hoshidicts/importer.hpp"
 #include "hoshidicts/lookup.hpp"
@@ -16,6 +17,9 @@
 void print_usage(const char* program) {
   std::cout << std::format("Usage:\n");
   std::cout << std::format("{} import <path/to/dictionary.zip>\n", program);
+  std::cout << std::format("{} pack <path/to/dictionary> <path/to/output.hoshi>\n", program);
+  std::cout << std::format("{} verify <path/to/dictionary.hoshi>\n", program);
+  std::cout << std::format("{} index <path/to/dictionary.hoshi>\n", program);
   std::cout << std::format("{} deinflect <word>\n", program);
   std::cout << std::format("{} preprocess <word>\n", program);
   std::cout << std::format("{} query <path/to/dictionary> <word>\n", program);
@@ -44,6 +48,43 @@ void cmd_import(const std::string& path) {
   } else {
     std::cout << std::format("could not import dictionary: {}\n", result.error);
   }
+}
+
+bool cmd_pack(const std::string& dictionary_dir, const std::string& output_path) {
+  const auto result = dictionary_container::pack(dictionary_dir, output_path);
+  if (!result.ok) {
+    std::cout << std::format("could not pack dictionary: {}\n", result.error);
+    return false;
+  }
+
+  std::cout << std::format("bytes: {}\n", result.bytes);
+  return true;
+}
+
+bool cmd_verify(const std::string& container_path) {
+  const auto result = dictionary_container::verify(container_path);
+  if (!result.ok) {
+    std::cout << std::format("could not verify container: {}\n", result.error);
+    return false;
+  }
+
+  std::cout << std::format("payload_version: {}\n", result.container.payload_version);
+  std::cout << std::format("section_count: {}\n", result.container.sections.size());
+  for (const auto& section : result.container.sections) {
+    std::cout << std::format("section: {} length: {}\n", section.type, section.length);
+  }
+  return true;
+}
+
+bool cmd_index(const std::string& container_path) {
+  const auto result = dictionary_container::read_index(container_path);
+  if (!result.ok) {
+    std::cout << std::format("could not read container index: {}\n", result.error);
+    return false;
+  }
+
+  std::cout << result.json << "\n";
+  return true;
 }
 
 void cmd_deinflect(const std::string& inflected) {
@@ -190,9 +231,16 @@ int main(int argc, char* argv[]) {
 
   const auto begin = std::chrono::steady_clock::now();
   std::string_view command = argv[1];
+  int status = 0;
 
   if (command == "import" && argc >= 3) {
     cmd_import(argv[2]);
+  } else if (command == "pack" && argc >= 4) {
+    status = cmd_pack(argv[2], argv[3]) ? 0 : 1;
+  } else if (command == "verify" && argc >= 3) {
+    status = cmd_verify(argv[2]) ? 0 : 1;
+  } else if (command == "index" && argc >= 3) {
+    status = cmd_index(argv[2]) ? 0 : 1;
   } else if (command == "deinflect" && argc >= 3) {
     cmd_deinflect(argv[2]);
   } else if (command == "preprocess" && argc >= 3) {
@@ -218,5 +266,5 @@ int main(int argc, char* argv[]) {
   std::chrono::duration<double, std::milli> duration = end - begin;
   std::cout << std::format("runtime: {}ms\n", duration.count());
 
-  return 0;
+  return status;
 }
