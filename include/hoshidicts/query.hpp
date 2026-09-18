@@ -2,9 +2,9 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
-#include <unordered_map>
 
 #if defined(__clang__) && defined(__APPLE__)
 #define SWIFT_IMPORT_UNSAFE __attribute__((swift_attr("import_unsafe")))
@@ -81,6 +81,9 @@ struct KanjiResult {
   std::vector<KanjiEntry> entries;
 };
 
+struct RawTerm;
+struct RawTerms;
+
 class DictionaryQuery {
  public:
   DictionaryQuery();
@@ -111,7 +114,11 @@ class DictionaryQuery {
 
  private:
   friend class Lookup;
-  std::vector<TermResult> query_raw(const std::string& expression) const;
+  RawTerms query_raw(const std::string& expression) const;
+  TermResult build_term(const RawTerms& raw, RawTerm& term) const;
+  void collect_frequencies(std::string_view expression, std::string_view reading,
+                           std::vector<FrequencyEntry>& out) const;
+  void collect_pitches(std::string_view expression, std::string_view reading, std::vector<PitchEntry>& out) const;
   void materialize(TermResult& term) const;
 
   struct DictionaryData;

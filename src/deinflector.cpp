@@ -7,8 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <ranges>
 
-Deinflector::Deinflector() : max_length_(0) { init_transforms(); }
+Deinflector::Deinflector() : trie_(1), max_length_(0) { init_transforms(); }
 
 namespace {
 constexpr std::string_view shimau_english_description =
@@ -1254,18 +1255,37 @@ int Deinflector::add_group(const TransformGroup& group) {
 }
 
 void Deinflector::add_rule(const Rule& rule) {
-  transforms_[rule.from].emplace_back(rule);
   max_length_ = std::max<size_t>(utf8::distance(rule.from.begin(), rule.from.end()), max_length_);
+  uint32_t node = 0;
+  auto it = rule.from.end();
+  while (it != rule.from.begin()) {
+    const char32_t c = utf8::prior(it, rule.from.begin());
+    auto& children = trie_[node].children;
+    auto child = std::ranges::find(children, c, &std::pair<char32_t, uint32_t>::first);
+    if (child == children.end()) {
+      const auto index = static_cast<uint32_t>(trie_.size());
+      trie_.emplace_back();
+      trie_[node].children.emplace_back(c, index);
+      node = index;
+    } else {
+      node = child->second;
+    }
+  }
+  if (trie_[node].rules < 0) {
+    trie_[node].rules = static_cast<int>(rule_lists_.size());
+    rule_lists_.emplace_back();
+  }
+  rule_lists_[trie_[node].rules].emplace_back(rule);
 }
 
 std::vector<DeinflectionResult> Deinflector::deinflect(const std::string& text) const {
   std::vector<DeinflectionResult> result{};
-  std::vector<TransformGroup> trace{};
+  std::vector<int> trace{};
   size_t text_len = utf8::distance(text.begin(), text.end());
   if (text_len > 1) {
     deinflect_recursive(text, NONE, trace, result);
   } else {
-    result.emplace_back(text, NONE, trace);
+    result.emplace_back(text, NONE, std::vector<TransformGroup>{});
   }
 
   return result;
@@ -1291,37 +1311,51 @@ uint32_t Deinflector::pos_to_conditions(const std::vector<std::string>& part_of_
   return result;
 }
 
-void Deinflector::deinflect_recursive(const std::string& text, uint32_t conditions, std::vector<TransformGroup>& trace,
+void Deinflector::deinflect_recursive(const std::string& text, uint32_t conditions, std::vector<int>& trace,
                                       std::vector<DeinflectionResult>& results) const {
   size_t text_len = utf8::distance(text.begin(), text.end());
   if (text_len <= 1) {
     return;
   }
-  results.emplace_back(text, conditions, trace);
+  std::vector<TransformGroup> groups;
+  groups.reserve(trace.size());
+  for (int id : trace) {
+    groups.push_back(groups_[id]);
+  }
+  results.emplace_back(text, conditions, std::move(groups));
 
-  size_t start = std::min(max_length_, text_len);
-  auto prefix_it = text.begin();
-  utf8::advance(prefix_it, text_len - start, text.end());
-
-  for (size_t i = start; i > 0; i--) {
-    auto it = transforms_.find(std::string_view(prefix_it, text.end()));
-    if (it != transforms_.end()) {
-      std::string prefix(text.begin(), prefix_it);
-      for (const auto& rule : it->second) {
-        if (conditions != NONE && !(conditions & rule.conditions_in)) {
-          continue;
-        }
-
-        std::string transformed = prefix + rule.to;
-
-        trace.push_back(groups_[rule.group_id]);
-        deinflect_recursive(transformed, rule.conditions_out, trace, results);
-        trace.pop_back();
-      }
+  std::array<std::pair<int, size_t>, 64> matches;
+  size_t match_count = 0;
+  uint32_t node = 0;
+  auto it = text.end();
+  while (it != text.begin() && match_count < matches.size()) {
+    const char32_t c = utf8::prior(it, text.begin());
+    const auto& children = trie_[node].children;
+    auto child = std::ranges::find(children, c, &std::pair<char32_t, uint32_t>::first);
+    if (child == children.end()) {
+      break;
     }
+    node = child->second;
+    if (trie_[node].rules >= 0) {
+      matches[match_count++] = {trie_[node].rules, static_cast<size_t>(it - text.begin())};
+    }
+  }
 
-    if (i > 1) {
-      utf8::next(prefix_it, text.end());
+  while (match_count > 0) {
+    const auto [rules, prefix_len] = matches[--match_count];
+    for (const auto& rule : rule_lists_[rules]) {
+      if (conditions != NONE && !(conditions & rule.conditions_in)) {
+        continue;
+      }
+
+      std::string transformed;
+      transformed.reserve(prefix_len + rule.to.size());
+      transformed.append(text, 0, prefix_len);
+      transformed.append(rule.to);
+
+      trace.push_back(rule.group_id);
+      deinflect_recursive(transformed, rule.conditions_out, trace, results);
+      trace.pop_back();
     }
   }
 }

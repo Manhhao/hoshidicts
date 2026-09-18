@@ -19,6 +19,7 @@
 #include "json/yomitan_parser.hpp"
 #include "memory/memory.hpp"
 #include "path_utils.hpp"
+#include "query_internal.hpp"
 
 namespace {
 template <typename T>
@@ -179,17 +180,25 @@ void DictionaryQuery::add_kanji_dict(const std::string& path) {
 }
 
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
-  auto results = query_raw(expression);
+  RawTerms raw = query_raw(expression);
+  std::vector<TermResult> results;
+  results.reserve(raw.terms.size());
+  for (auto& term : raw.terms) {
+    results.push_back(build_term(raw, term));
+  }
+  std::ranges::sort(results, [](const TermResult& a, const TermResult& b) {
+    return a.expression != b.expression ? a.expression < b.expression : a.reading < b.reading;
+  });
   for (auto& term : results) {
     materialize(term);
   }
   return results;
 }
 
-std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
-  std::vector<TermResult> results;
-  auto find_term = [&results](std::string_view expr, std::string_view reading) -> TermResult* {
-    for (auto& term : results) {
+RawTerms DictionaryQuery::query_raw(const std::string& expression) const {
+  RawTerms raw;
+  auto find_term = [&raw](std::string_view expr, std::string_view reading) -> RawTerm* {
+    for (auto& term : raw.terms) {
       if (term.expression == expr && term.reading == reading) {
         return &term;
       }
@@ -204,6 +213,8 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
     const uint8_t* index_addr = data->blobs.data + offset_addr;
 
     auto count = read_val<uint32_t>(index_addr);
+    raw.terms.reserve(raw.terms.size() + count);
+    raw.glossaries.reserve(raw.glossaries.size() + count);
     for (uint32_t i = 0; i < count; i++) {
       auto offset = read_val<uint64_t>(index_addr);
       const uint8_t* blob_addr = data->blobs.data + offset;
@@ -254,161 +265,199 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
         score = read_val<int32_t>(blob_addr);
       }
 
-      GlossaryEntry entry;
-      entry.dict_name = name;
-      entry.definition_tags = definition_tags;
-      entry.term_tags = term_tags;
-      entry.compressed_data = data->blobs.data + glossary_offset;
-      entry.compressed_size = glossary_size;
-      entry.zstd_dict = data->zstd_dict;
+      const auto glossary_index = static_cast<uint32_t>(raw.glossaries.size());
+      raw.glossaries.push_back(RawGlossary{.dict_name = &name,
+                                           .definition_tags = definition_tags,
+                                           .term_tags = term_tags,
+                                           .rules = rules,
+                                           .compressed_data = data->blobs.data + glossary_offset,
+                                           .compressed_size = glossary_size,
+                                           .zstd_dict = data->zstd_dict,
+                                           .next = UINT32_MAX});
 
-      TermResult* term = find_term(expr, reading);
+      RawTerm* term = find_term(expr, reading);
       if (term == nullptr) {
-        results.push_back({.expression = std::string(expr),
-                           .reading = std::string(reading),
-                           .rules = std::string(rules),
-                           .score = score,
-                           .glossaries = {},
-                           .frequencies = {}});
-        term = &results.back();
+        raw.terms.push_back(RawTerm{.expression = expr,
+                                    .reading = reading,
+                                    .score = score,
+                                    .first_glossary = glossary_index,
+                                    .last_glossary = glossary_index,
+                                    .frequencies = {},
+                                    .pitches = {}});
       } else {
-        if (!rules.empty()) {
-          if (!term->rules.empty()) {
-            term->rules += " ";
-          }
-          term->rules += rules;
-        }
+        raw.glossaries[term->last_glossary].next = glossary_index;
+        term->last_glossary = glossary_index;
         term->score = std::max(term->score, score);
       }
-      term->glossaries.push_back(std::move(entry));
     }
   }
 
-  std::ranges::sort(results, [](const TermResult& a, const TermResult& b) {
-    return a.expression != b.expression ? a.expression < b.expression : a.reading < b.reading;
-  });
-  query_freq(results);
-  query_pitch(results);
+  for (auto& term : raw.terms) {
+    collect_frequencies(term.expression, term.reading, term.frequencies);
+    collect_pitches(term.expression, term.reading, term.pitches);
+  }
 
-  return results;
+  return raw;
+}
+
+TermResult DictionaryQuery::build_term(const RawTerms& raw, RawTerm& term) const {
+  TermResult result{.expression = std::string(term.expression),
+                    .reading = std::string(term.reading),
+                    .rules = {},
+                    .score = term.score,
+                    .glossaries = {},
+                    .frequencies = std::move(term.frequencies),
+                    .pitches = std::move(term.pitches)};
+  size_t glossary_count = 0;
+  for (uint32_t i = term.first_glossary; i != UINT32_MAX; i = raw.glossaries[i].next) {
+    ++glossary_count;
+  }
+  result.glossaries.reserve(glossary_count);
+  for (uint32_t i = term.first_glossary; i != UINT32_MAX; i = raw.glossaries[i].next) {
+    const RawGlossary& g = raw.glossaries[i];
+    if (!g.rules.empty()) {
+      if (!result.rules.empty()) {
+        result.rules += " ";
+      }
+      result.rules += g.rules;
+    }
+    GlossaryEntry& entry = result.glossaries.emplace_back();
+    entry.dict_name = *g.dict_name;
+    entry.definition_tags = g.definition_tags;
+    entry.term_tags = g.term_tags;
+    entry.compressed_data = g.compressed_data;
+    entry.compressed_size = g.compressed_size;
+    entry.zstd_dict = g.zstd_dict;
+  }
+  return result;
 }
 
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [name, styles, data] : freq_dicts_) {
-      uint64_t offset_addr = data->table(term.expression);
-      if (offset_addr == 0) {
+    collect_frequencies(term.expression, term.reading, term.frequencies);
+  }
+}
+
+void DictionaryQuery::collect_frequencies(std::string_view expression, std::string_view reading,
+                                        std::vector<FrequencyEntry>& out) const {
+  for (const auto& [name, styles, data] : freq_dicts_) {
+    uint64_t offset_addr = data->table(expression);
+    if (offset_addr == 0) {
+      continue;
+    }
+    const uint8_t* index_addr = data->blobs.data + offset_addr;
+    auto count = read_val<uint32_t>(index_addr);
+
+    std::vector<Frequency> frequencies;
+    for (uint32_t i = 0; i < count; i++) {
+      auto offset = read_val<uint64_t>(index_addr);
+      const uint8_t* blob_addr = data->blobs.data + offset;
+
+      auto type = read_val<uint8_t>(blob_addr);
+      if (type != 1) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + offset_addr;
-      auto count = read_val<uint32_t>(index_addr);
 
-      std::vector<Frequency> frequencies;
-      for (uint32_t i = 0; i < count; i++) {
-        auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs.data + offset;
-
-        auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1) {
-          continue;
-        }
-
-        auto expr_len = read_val<uint16_t>(blob_addr);
-        std::string_view expr = read_str(blob_addr, expr_len);
-        if (expr != term.expression) {
-          continue;
-        }
-
-        auto mode_len = read_val<uint8_t>(blob_addr);
-        std::string_view mode = read_str(blob_addr, mode_len);
-        if (mode != "freq") {
-          continue;
-        }
-
-        auto freq_data_size = read_val<uint32_t>(blob_addr);
-        std::string_view freq_data = read_str(blob_addr, freq_data_size);
-
-        ParsedFrequency parsed;
-        if (yomitan_parser::parse_frequency(freq_data, parsed)) {
-          if (!parsed.reading.empty() && parsed.reading != term.reading) {
-            continue;
-          }
-          frequencies.emplace_back(
-              Frequency{.value = parsed.value, .display_value = std::string(parsed.display_value)});
-        }
+      auto expr_len = read_val<uint16_t>(blob_addr);
+      std::string_view expr = read_str(blob_addr, expr_len);
+      if (expr != expression) {
+        continue;
       }
-      if (!frequencies.empty()) {
-        term.frequencies.emplace_back(FrequencyEntry{.dict_name = name, .frequencies = std::move(frequencies)});
+
+      auto mode_len = read_val<uint8_t>(blob_addr);
+      std::string_view mode = read_str(blob_addr, mode_len);
+      if (mode != "freq") {
+        continue;
       }
+
+      auto freq_data_size = read_val<uint32_t>(blob_addr);
+      std::string_view freq_data = read_str(blob_addr, freq_data_size);
+
+      ParsedFrequency parsed;
+      if (yomitan_parser::parse_frequency(freq_data, parsed)) {
+        if (!parsed.reading.empty() && parsed.reading != reading) {
+          continue;
+        }
+        frequencies.emplace_back(
+            Frequency{.value = parsed.value, .display_value = std::string(parsed.display_value)});
+      }
+    }
+    if (!frequencies.empty()) {
+      out.emplace_back(FrequencyEntry{.dict_name = name, .frequencies = std::move(frequencies)});
     }
   }
 }
 
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [name, styles, data] : pitch_dicts_) {
-      uint64_t offset_addr = data->table(term.expression);
-      if (offset_addr == 0) {
+    collect_pitches(term.expression, term.reading, term.pitches);
+  }
+}
+
+void DictionaryQuery::collect_pitches(std::string_view expression, std::string_view reading,
+                                    std::vector<PitchEntry>& out) const {
+  for (const auto& [name, styles, data] : pitch_dicts_) {
+    uint64_t offset_addr = data->table(expression);
+    if (offset_addr == 0) {
+      continue;
+    }
+    const uint8_t* index_addr = data->blobs.data + offset_addr;
+    auto count = read_val<uint32_t>(index_addr);
+
+    std::vector<Pitch> pitches;
+    std::vector<std::string> transcriptions;
+    for (uint32_t i = 0; i < count; i++) {
+      auto offset = read_val<uint64_t>(index_addr);
+      const uint8_t* blob_addr = data->blobs.data + offset;
+
+      auto type = read_val<uint8_t>(blob_addr);
+      if (type != 1) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + offset_addr;
-      auto count = read_val<uint32_t>(index_addr);
 
-      std::vector<Pitch> pitches;
-      std::vector<std::string> transcriptions;
-      for (uint32_t i = 0; i < count; i++) {
-        auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs.data + offset;
+      auto expr_len = read_val<uint16_t>(blob_addr);
+      std::string_view expr = read_str(blob_addr, expr_len);
+      if (expr != expression) {
+        continue;
+      }
 
-        auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1) {
-          continue;
-        }
+      auto mode_len = read_val<uint8_t>(blob_addr);
+      std::string_view mode = read_str(blob_addr, mode_len);
+      ParsedPitch parsed;
+      if (mode == "pitch") {
+        auto pitch_data_size = read_val<uint32_t>(blob_addr);
+        std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
 
-        auto expr_len = read_val<uint16_t>(blob_addr);
-        std::string_view expr = read_str(blob_addr, expr_len);
-        if (expr != term.expression) {
-          continue;
-        }
-
-        auto mode_len = read_val<uint8_t>(blob_addr);
-        std::string_view mode = read_str(blob_addr, mode_len);
-        ParsedPitch parsed;
-        if (mode == "pitch") {
-          auto pitch_data_size = read_val<uint32_t>(blob_addr);
-          std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
-
-          if (yomitan_parser::parse_pitch(pitch_data, parsed)) {
-            if (!parsed.reading.empty() && parsed.reading != term.reading) {
-              continue;
-            }
-            for (auto& accent : parsed.pitches) {
-              pitches.emplace_back(Pitch{.position = accent.position,
-                                         .pattern = std::move(accent.pattern),
-                                         .nasal = std::move(accent.nasal),
-                                         .devoice = std::move(accent.devoice)});
-            }
+        if (yomitan_parser::parse_pitch(pitch_data, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != reading) {
+            continue;
           }
-        } else if (mode == "ipa") {
-          auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
-          std::string_view transcriptions_data = read_str(blob_addr, transcriptions_data_size);
-          if (yomitan_parser::parse_ipa(transcriptions_data, parsed)) {
-            if (!parsed.reading.empty() && parsed.reading != term.reading) {
-              continue;
-            }
-            for (std::string_view transcription : parsed.transcriptions) {
-              transcriptions.emplace_back(transcription);
-            }
+          for (auto& accent : parsed.pitches) {
+            pitches.emplace_back(Pitch{.position = accent.position,
+                                       .pattern = std::move(accent.pattern),
+                                       .nasal = std::move(accent.nasal),
+                                       .devoice = std::move(accent.devoice)});
+          }
+        }
+      } else if (mode == "ipa") {
+        auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
+        std::string_view transcriptions_data = read_str(blob_addr, transcriptions_data_size);
+        if (yomitan_parser::parse_ipa(transcriptions_data, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != reading) {
+            continue;
+          }
+          for (std::string_view transcription : parsed.transcriptions) {
+            transcriptions.emplace_back(transcription);
           }
         }
       }
-      if (!pitches.empty() || !transcriptions.empty()) {
-        term.pitches.emplace_back(PitchEntry{
-            .dict_name = name,
-            .pitches = std::move(pitches),
-            .transcriptions = std::move(transcriptions),
-        });
-      }
+    }
+    if (!pitches.empty() || !transcriptions.empty()) {
+      out.emplace_back(PitchEntry{
+          .dict_name = name,
+          .pitches = std::move(pitches),
+          .transcriptions = std::move(transcriptions),
+      });
     }
   }
 }
@@ -489,14 +538,14 @@ std::string DictionaryQuery::decompress_glossary(const void* data, size_t size, 
   }
 
   std::string result;
-  result.resize(decompressed_size);
-
-  size_t actual_size = ZSTD_decompress_usingDDict(thread_dctx(), result.data(), result.size(), data, size, dict);
+  size_t actual_size = 0;
+  result.resize_and_overwrite(decompressed_size, [&](char* buf, size_t capacity) {
+    actual_size = ZSTD_decompress_usingDDict(thread_dctx(), buf, capacity, data, size, dict);
+    return ZSTD_isError(actual_size) ? size_t{0} : actual_size;
+  });
   if (ZSTD_isError(actual_size)) {
     return "";
   }
-
-  result.resize(actual_size);
   return result;
 }
 

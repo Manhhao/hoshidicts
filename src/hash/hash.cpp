@@ -28,7 +28,9 @@ uint64_t linear::operator()(std::string_view key) const {
     if (ptr_->table[pos].hash == h) {
       return ptr_->table[pos].offset;
     }
-    pos = (pos + 1) % ptr_->capacity;
+    if (++pos == ptr_->capacity) {
+      pos = 0;
+    }
   }
 }
 
