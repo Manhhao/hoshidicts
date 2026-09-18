@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct TextVariant {
@@ -9,5 +10,5 @@ struct TextVariant {
 };
 
 namespace text_processor {
-std::vector<TextVariant> process(const std::string& src);
+std::vector<TextVariant> process(std::string_view src);
 }

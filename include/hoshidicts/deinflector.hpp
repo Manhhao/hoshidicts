@@ -1,7 +1,8 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <cstdint>
 #include <cstddef>
@@ -58,7 +59,7 @@ class Deinflector {
     V = V1 | V5 | VK | VS | VZ,
   };
 
-  void deinflect_recursive(const std::string& text, uint32_t conditions, std::vector<TransformGroup>& trace,
+  void deinflect_recursive(const std::string& text, uint32_t conditions, std::vector<int>& trace,
                            std::vector<DeinflectionResult>& results) const;
 
   void init_transforms();
@@ -67,7 +68,13 @@ class Deinflector {
   void add_rule(const Rule& rule);
   void add_irregular(std::string_view suffix, uint32_t conditions_in, uint32_t conditions_out, int group_id);
 
-  std::unordered_map<std::string, std::vector<Rule>> transforms_;
+  struct TrieNode {
+    std::vector<std::pair<char32_t, uint32_t>> children;
+    int rules = -1;
+  };
+
+  std::vector<TrieNode> trie_;
+  std::vector<std::vector<Rule>> rule_lists_;
   std::vector<TransformGroup> groups_;
   size_t max_length_;
 };

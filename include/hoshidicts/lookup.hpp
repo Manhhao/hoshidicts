@@ -30,7 +30,7 @@ class Lookup {
                                    const LookupOptions& options = {}) const;
 
  private:
-  static void filter_by_pos(std::vector<TermResult>& terms, const DeinflectionResult& d);
+  static void filter_by_pos(RawTerms& terms, const DeinflectionResult& d);
 
   DictionaryQuery& query_;
   Deinflector& deinflector_;
