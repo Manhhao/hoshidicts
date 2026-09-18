@@ -123,6 +123,8 @@ int hd_query_add_term_dict(hd_query* q, const char* path);
 int hd_query_add_freq_dict(hd_query* q, const char* path);
 int hd_query_add_pitch_dict(hd_query* q, const char* path);
 int hd_query_add_kanji_dict(hd_query* q, const char* path);
+size_t hd_query_remove_dict(hd_query* q, const char* path);
+int hd_query_set_dict_order(hd_query* q, const char* const* paths, size_t count);
 
 hd_results* hd_query_run(const hd_query* q, const char* expression, const hd_term_result** out_terms,
                          size_t* out_count);

@@ -97,6 +97,7 @@ void DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType typ
   }
 
   Dictionary dict;
+  dict.path = path_utf8;
   Summary summary;
   std::ifstream index_file(path / "index.json", std::ios::binary);
   if (!index_file) {
@@ -178,6 +179,33 @@ void DictionaryQuery::add_kanji_dict(const std::string& path) {
   add_dict(path, DictionaryQuery::DictionaryType::KANJI);
 }
 
+size_t DictionaryQuery::remove_dict(const std::string& path) {
+  size_t removed = 0;
+  for (auto* dicts : {&term_dicts_, &freq_dicts_, &pitch_dicts_, &kanji_dicts_}) {
+    removed += std::erase_if(*dicts, [&path](const Dictionary& d) { return d.path == path; });
+  }
+  return removed;
+}
+
+bool DictionaryQuery::set_dict_order(const std::vector<std::string>& paths) {
+  for (const auto& path : paths) {
+    const auto loaded = [&path](const std::vector<Dictionary>& dicts) {
+      return std::ranges::any_of(dicts, [&path](const Dictionary& d) { return d.path == path; });
+    };
+    if (!loaded(term_dicts_) && !loaded(freq_dicts_) && !loaded(pitch_dicts_) && !loaded(kanji_dicts_)) {
+      return false;
+    }
+  }
+  const auto rank = [&paths](const Dictionary& d) {
+    const auto it = std::ranges::find(paths, d.path);
+    return it == paths.end() ? paths.size() : static_cast<size_t>(it - paths.begin());
+  };
+  for (auto* dicts : {&term_dicts_, &freq_dicts_, &pitch_dicts_, &kanji_dicts_}) {
+    std::ranges::stable_sort(*dicts, {}, rank);
+  }
+  return true;
+}
+
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
   auto results = query_raw(expression);
   for (auto& term : results) {
@@ -188,7 +216,7 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 
 std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
   std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
-  for (const auto& [name, styles, data] : term_dicts_) {
+  for (const auto& [path, name, styles, data] : term_dicts_) {
     uint64_t offset_addr = data->table(expression);
     if (offset_addr == 0) {
       continue;
@@ -284,7 +312,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
 
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [name, styles, data] : freq_dicts_) {
+    for (const auto& [path, name, styles, data] : freq_dicts_) {
       uint64_t offset_addr = data->table(term.expression);
       if (offset_addr == 0) {
         continue;
@@ -335,7 +363,7 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
 
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [name, styles, data] : pitch_dicts_) {
+    for (const auto& [path, name, styles, data] : pitch_dicts_) {
       uint64_t offset_addr = data->table(term.expression);
       if (offset_addr == 0) {
         continue;
@@ -406,7 +434,7 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
   KanjiResult result;
   result.character = kanji;
 
-  for (const auto& [name, styles, data] : kanji_dicts_) {
+  for (const auto& [path, name, styles, data] : kanji_dicts_) {
     uint64_t offset_addr = data->table(kanji);
     if (offset_addr == 0) {
       continue;
@@ -501,7 +529,7 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
 }
 
 MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name, const std::string& media_path) const {
-  for (const auto& [name, styles, data] : term_dicts_) {
+  for (const auto& [path, name, styles, data] : term_dicts_) {
     if (name != dict_name) {
       continue;
     }
