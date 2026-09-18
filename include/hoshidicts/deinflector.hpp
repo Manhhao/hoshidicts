@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
@@ -67,7 +69,12 @@ class Deinflector {
   void add_rule(const Rule& rule);
   void add_irregular(std::string_view suffix, uint32_t conditions_in, uint32_t conditions_out, int group_id);
 
-  std::unordered_map<std::string, std::vector<Rule>> transforms_;
+  struct string_hash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const { return std::hash<std::string_view>{}(sv); }
+  };
+
+  std::unordered_map<std::string, std::vector<Rule>, string_hash, std::equal_to<>> transforms_;
   std::vector<TransformGroup> groups_;
   size_t max_length_;
 };

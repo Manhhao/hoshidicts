@@ -1304,8 +1304,7 @@ void Deinflector::deinflect_recursive(const std::string& text, uint32_t conditio
   utf8::advance(prefix_it, text_len - start, text.end());
 
   for (size_t i = start; i > 0; i--) {
-    std::string suffix(prefix_it, text.end());
-    auto it = transforms_.find(suffix);
+    auto it = transforms_.find(std::string_view(prefix_it, text.end()));
     if (it != transforms_.end()) {
       std::string prefix(text.begin(), prefix_it);
       for (const auto& rule : it->second) {

@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <climits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <sstream>
+#include <vector>
 
 #include "text_processor/text_processor.hpp"
 
@@ -71,8 +73,7 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
           auto it = result_map.find(key);
           if (it != result_map.end()) {
             // we only need the longest matched form
-            if (utf8::distance(search_str.begin(), search_str.end()) >
-                utf8::distance(it->second.matched.begin(), it->second.matched.end())) {
+            if (search_str.size() > it->second.matched.size()) {
               it->second = LookupResult{.matched = search_str,
                                         .deinflected = deinflection.text,
                                         .trace = deinflection.trace,
@@ -121,11 +122,8 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     primary_reading = *options.primary_reading;
   }
   const size_t retained_count = std::min(results.size(), static_cast<size_t>(max_results));
-  auto middle_iter = std::ranges::next(results.begin(), static_cast<std::ptrdiff_t>(retained_count));
-  std::ranges::partial_sort(
-      results, middle_iter,
-      [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending, primary_reading](const auto& a,
-                                                                                                  const auto& b) {
+  auto less = [&auto_frequency_dictionaries, frequency_dictionary, frequency_descending, primary_reading](
+                  const LookupResult& a, const LookupResult& b) {
         if (!primary_reading.empty()) {
           const bool primary_a = matches_primary_reading(a.term, primary_reading);
           const bool primary_b = matches_primary_reading(b.term, primary_reading);
@@ -134,10 +132,8 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
           }
         }
 
-        auto len_a = utf8::distance(a.matched.begin(), a.matched.end());
-        auto len_b = utf8::distance(b.matched.begin(), b.matched.end());
-        if (len_a != len_b) {
-          return len_a > len_b;
+        if (a.matched.size() != b.matched.size()) {
+          return a.matched.size() > b.matched.size();
         }
 
         auto steps_a = a.preprocessor_steps;
@@ -184,17 +180,24 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
         auto a_reading_expr_match = a.term.expression == a.term.reading;
         auto b_reading_expr_match = b.term.expression == b.term.reading;
         return a_reading_expr_match > b_reading_expr_match;
-      });
+      };
 
-  if (results.size() > retained_count) {
-    results.resize(retained_count);
+  std::vector<size_t> order(results.size());
+  std::iota(order.begin(), order.end(), size_t{0});
+  auto order_middle = std::ranges::next(order.begin(), static_cast<std::ptrdiff_t>(retained_count));
+  std::ranges::partial_sort(order, order_middle, [&](size_t ia, size_t ib) { return less(results[ia], results[ib]); });
+
+  std::vector<LookupResult> retained;
+  retained.reserve(retained_count);
+  for (auto it = order.begin(); it != order_middle; ++it) {
+    retained.push_back(std::move(results[*it]));
   }
 
-  for (auto& r : results) {
+  for (auto& r : retained) {
     query_.materialize(r.term);
   }
 
-  return results;
+  return retained;
 }
 
 void Lookup::filter_by_pos(std::vector<TermResult>& terms, const DeinflectionResult& d) {

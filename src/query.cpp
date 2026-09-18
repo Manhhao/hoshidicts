@@ -187,7 +187,15 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 }
 
 std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
-  std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
+  std::vector<TermResult> results;
+  auto find_term = [&results](std::string_view expr, std::string_view reading) -> TermResult* {
+    for (auto& term : results) {
+      if (term.expression == expr && term.reading == reading) {
+        return &term;
+      }
+    }
+    return nullptr;
+  };
   for (const auto& [name, styles, data] : term_dicts_) {
     uint64_t offset_addr = data->table(expression);
     if (offset_addr == 0) {
@@ -254,28 +262,31 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
       entry.compressed_size = glossary_size;
       entry.zstd_dict = data->zstd_dict;
 
-      auto [it, inserted] = term_map.try_emplace({expr, reading});
-      if (inserted) {
-        it->second = {.expression = std::string(expr),
-                      .reading = std::string(reading),
-                      .rules = std::string(rules),
-                      .score = score,
-                      .glossaries = {},
-                      .frequencies = {}};
+      TermResult* term = find_term(expr, reading);
+      if (term == nullptr) {
+        results.push_back({.expression = std::string(expr),
+                           .reading = std::string(reading),
+                           .rules = std::string(rules),
+                           .score = score,
+                           .glossaries = {},
+                           .frequencies = {}});
+        term = &results.back();
       } else {
         if (!rules.empty()) {
-          if (!it->second.rules.empty()) {
-            it->second.rules += " ";
+          if (!term->rules.empty()) {
+            term->rules += " ";
           }
-          it->second.rules += rules;
+          term->rules += rules;
         }
-        it->second.score = std::max(it->second.score, score);
+        term->score = std::max(term->score, score);
       }
-      it->second.glossaries.push_back(std::move(entry));
+      term->glossaries.push_back(std::move(entry));
     }
   }
 
-  auto results = term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
+  std::ranges::sort(results, [](const TermResult& a, const TermResult& b) {
+    return a.expression != b.expression ? a.expression < b.expression : a.reading < b.reading;
+  });
   query_freq(results);
   query_pitch(results);
 
