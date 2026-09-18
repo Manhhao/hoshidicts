@@ -293,7 +293,6 @@ std::u32string strip_middle_dots(const std::u32string& text) {
   return result;
 }
 
-// TODO: implement rest of preprocessors
 const std::vector<TextProcessor>& get_japanese_processors() {
   static const std::vector<TextProcessor> processors = {
       {.options = {0, 1},
@@ -354,7 +353,6 @@ std::vector<TextVariant> text_processor::process(const std::string& src) {
     std::vector<std::pair<std::u32string, int>> next;
     next.reserve(variants.size() * processor.options.size());
 
-    // Variant sets stay small; linear dedup avoids tree allocations, then sorting preserves std::map's lexical order.
     for (const auto& [variant, steps] : variants) {
       for (int option : processor.options) {
         auto processed = option == 0 ? variant : processor.process(variant, option);
