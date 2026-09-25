@@ -162,6 +162,9 @@ bool yomitan_parser::parse_frequency(std::string_view content, ParsedFrequency& 
 
   int val;
   error = glz::read_json(val, content);
+  if (error) {
+    error = glz::read<glz::opt_on<glz::opts{}, glz::quoted_num_opt_tag{}>()>(val, content);
+  }
   if (!error) {
     out.value = val;
     out.display_value = std::to_string(val);
