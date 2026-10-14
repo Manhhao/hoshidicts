@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <string_view>
 #include <vector>
@@ -48,16 +49,19 @@ struct DictionaryQuery::DictionaryData {
   memory::mapped_file blobs;
   memory::mapped_file hash_table;
   memory::mapped_file bloom_filter;
-  memory::mapped_file media;
   memory::mapped_file media_index;
+  std::mutex media_mutex;
+  ankerl::unordered_dense::map<uint64_t, memory::mapped_file> media_views;
   ZSTD_DDict* zstd_dict = nullptr;
 
   ~DictionaryData() {
     memory::unmap(blobs);
     memory::unmap(hash_table);
     memory::unmap(bloom_filter);
-    memory::unmap(media);
     memory::unmap(media_index);
+    for (const auto& [offset, view] : media_views) {
+      memory::unmap(view);
+    }
     ZSTD_freeDDict(zstd_dict);
   }
 };
@@ -140,10 +144,7 @@ void DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType typ
     return;
   }
 
-  dict.data->media = memory::map_rd(path / "media.bin");
-  if (dict.data->media) {
-    dict.data->media_index = memory::map_rd(path / "media.idx");
-  }
+  dict.data->media_index = memory::map_rd(path / "media.idx");
 
   if (version >= 4) {
     std::ifstream f(path / "dict.zstd", std::ios::binary);
@@ -534,13 +535,17 @@ MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name,
       continue;
     }
 
-    if (!data->media || !data->media_index) {
+    const auto media_file = path_utils::from_utf8(path) / "media.bin";
+    const intptr_t media = memory::open_rd(media_file);
+    if (media == -1 || !data->media_index) {
       return {};
     }
 
     const uint8_t* ptr = data->media_index.data;
     auto count = read_val<uint32_t>(ptr);
 
+    MediaFileView result{};
+    std::string header(sizeof(uint16_t) + media_path.size() + sizeof(uint32_t), '\0');
     size_t left = 0;
     size_t right = count;
     while (left < right) {
@@ -548,20 +553,27 @@ MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name,
       uint64_t record_offset;
       std::memcpy(&record_offset, data->media_index.data + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
 
-      const uint8_t* record = data->media.data + record_offset;
+      memory::read_at(media, record_offset, header.data(), header.size());
+      const auto* record = reinterpret_cast<const uint8_t*>(header.data());
       auto path_size = read_val<uint16_t>(record);
-      std::string_view indexed_path = read_str(record, path_size);
+      std::string_view indexed_path = read_str(record, std::min<size_t>(path_size, header.size() - sizeof(uint16_t)));
       if (indexed_path < media_path) {
         left = mid + 1;
       } else if (indexed_path > media_path) {
         right = mid;
       } else {
         auto blob_size = read_val<uint32_t>(record);
-        const char* blob_data = reinterpret_cast<const char*>(record);
-        return {.data = blob_data, .size = blob_size};
+        std::lock_guard lock(data->media_mutex);
+        auto& view = data->media_views[record_offset];
+        if (!view && blob_size > 0) {
+          view = memory::map_rd(media_file, record_offset + header.size(), blob_size);
+        }
+        result = {.data = reinterpret_cast<const char*>(view.data), .size = blob_size};
+        break;
       }
     }
-    return {};
+    memory::close_rd(media);
+    return result;
   }
   return {};
 }
