@@ -30,6 +30,11 @@ uint64_t hd_import_result_media_count(const hd_import_result* r);
 
 const char* hd_import_result_error(const hd_import_result* r);
 
+int hd_container_pack(const char* dictionary_dir, const char* output_path, char** error);
+int hd_container_verify(const char* container_path, uint32_t* payload_version, char** error);
+int hd_container_index(const char* container_path, char** index_json, char** error);
+void hd_container_string_free(char* value);
+
 // deinflector
 typedef struct hd_deinflector hd_deinflector;
 

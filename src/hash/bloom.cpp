@@ -14,13 +14,20 @@ constexpr uint64_t num_hashes = 7;
 }
 
 bool bloom::load(const uint8_t* ptr, size_t size) {
-  uint64_t num_bits = *reinterpret_cast<const uint64_t*>(ptr);
-  if (size != 2 * sizeof(uint64_t) + num_bits / 8) {
+  if (size < 2 * sizeof(uint64_t)) {
     return false;
   }
-  num_hashes_ = *reinterpret_cast<const uint64_t*>(ptr + sizeof(uint64_t));
+  uint64_t num_bits;
+  std::memcpy(&num_bits, ptr, sizeof(num_bits));
+  if (num_bits == 0 || !std::has_single_bit(num_bits) || num_bits % 8 != 0) {
+    return false;
+  }
+  if (size - 2 * sizeof(uint64_t) != num_bits / 8) {
+    return false;
+  }
+  std::memcpy(&num_hashes_, ptr + sizeof(uint64_t), sizeof(num_hashes_));
   mask_ = num_bits - 1;
-  bits_ = reinterpret_cast<const uint64_t*>(ptr + 2 * sizeof(uint64_t));
+  bits_ = ptr + 2 * sizeof(uint64_t);
   return true;
 }
 
@@ -36,7 +43,7 @@ void bloom::build_to_file(const std::vector<uint64_t>& hashes, const std::filesy
 
   std::memcpy(out.data, &num_bits, sizeof(uint64_t));
   std::memcpy(out.data + sizeof(uint64_t), &num_hashes, sizeof(uint64_t));
-  auto* bits = reinterpret_cast<uint64_t*>(out.data + 2 * sizeof(uint64_t));
+  uint8_t* bits = out.data + 2 * sizeof(uint64_t);
   std::memset(bits, 0, bits_size);
 
   for (uint64_t h : hashes) {
@@ -44,7 +51,7 @@ void bloom::build_to_file(const std::vector<uint64_t>& hashes, const std::filesy
     auto h2 = static_cast<uint32_t>(h >> 32);
     for (uint64_t k = 0; k < num_hashes; k++) {
       uint64_t bit = (h1 + k * h2) & mask;
-      bits[bit >> 6] |= 1ULL << (bit & 63);
+      bits[bit >> 3] |= 1U << (bit & 7);
     }
   }
 
