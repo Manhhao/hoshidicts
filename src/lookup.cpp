@@ -45,6 +45,28 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
 bool matches_primary_reading(const TermResult& term, std::string_view primary_reading) {
   return term.reading == primary_reading;
 }
+
+// the trailing part of `variant` that deinflection rewrote to produce `deinflected`
+std::string_view rewritten_suffix(std::string_view variant, std::string_view deinflected) {
+  auto it = std::ranges::mismatch(variant, deinflected).in1;
+  while (it != variant.begin() && it != variant.end() && (static_cast<unsigned char>(*it) & 0xc0) == 0x80) {
+    --it;
+  }
+  return {it, variant.end()};
+}
+
+bool is_valid_rewrite(const SourceText& source, std::string_view suffix, const DeinflectionResult& deinflection) {
+  auto check = text_processor::check_rewritten_suffix(source, suffix);
+  // characters missing from the source may explain a single rule (ていった -> ていた -> てく),
+  // not a chain of them (もうとっく -> もうとく -> もうて -> まう)
+  if (!check.in_source && deinflection.trace.size() > 1) {
+    return false;
+  }
+  // a following katakana word is not part of the inflection (老いてコン -> 老いてこん -> 老いてくる -> 老いる),
+  // unless it is a stylized polite ending (作りマス)
+  return !check.reaches_katakana_word ||
+         std::ranges::any_of(deinflection.trace, [](const TransformGroup& group) { return group.name == "-ます"; });
+}
 }
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
@@ -59,9 +81,19 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   for (size_t i = std::min(scan_length, text_len); i > 0; i--) {
     std::string search_str(lookup_string.begin(), search_str_it);
     auto processor_results = text_processor::process(search_str);
+    std::optional<SourceText> source;  // only needed once a deinflection rewrites something
     for (auto& variant : processor_results) {
       auto deinflection_results = deinflector_.deinflect(variant.text);
       for (auto& deinflection : deinflection_results) {
+        auto suffix = rewritten_suffix(variant.text, deinflection.text);
+        if (!suffix.empty()) {
+          if (!source) {
+            source = text_processor::normalize_source(search_str);
+          }
+          if (!is_valid_rewrite(*source, suffix, deinflection)) {
+            continue;
+          }
+        }
         auto terms = query_.query_raw(deinflection.text);
         filter_by_pos(terms, deinflection);
         query_.query_freq(terms);
