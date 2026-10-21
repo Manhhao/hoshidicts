@@ -12,18 +12,21 @@ struct TextVariant {
 struct SourceText {
   std::u32string text;    // NFKC normalized source
   std::u32string folded;  // text with katakana and kanji variants folded
-  size_t katakana_word_end;  // end of the last katakana character following a hiragana or kanji one, 0 if none
+  // katakana words following hiragana
+  std::vector<bool> inside_katakana_word;  // past the first character of such a word
+  bool katakana_word_continues;            // the source ends inside such a word, which continues after it
 };
 
 struct SuffixCheck {
   bool in_source;              // the suffix ends the source as written, e.g. no emphatic っ was collapsed in it
-  bool reaches_katakana_word;  // the suffix reaches into a katakana word following a hiragana or kanji one
+  bool reaches_katakana_word;  // the suffix takes part of a katakana word following hiragana, not all of it
 };
 
 namespace text_processor {
 std::vector<TextVariant> process(const std::string& src);
 
-SourceText normalize_source(const std::string& src);
+// `next` is the character following `src` in the text, 0 if none
+SourceText normalize_source(const std::string& src, char32_t next);
 // checks `suffix`, the trailing part of a variant of `source` rewritten by deinflection
 SuffixCheck check_rewritten_suffix(const SourceText& source, std::string_view suffix);
 }

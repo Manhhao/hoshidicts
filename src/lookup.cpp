@@ -62,10 +62,9 @@ bool is_valid_rewrite(const SourceText& source, std::string_view suffix, const D
   if (!check.in_source && deinflection.trace.size() > 1) {
     return false;
   }
-  // a following katakana word is not part of the inflection (老いてコン -> 老いてこん -> 老いてくる -> 老いる),
-  // unless it is a stylized polite ending (作りマス)
-  return !check.reaches_katakana_word ||
-         std::ranges::any_of(deinflection.trace, [](const TransformGroup& group) { return group.name == "-ます"; });
+  // a following katakana word is not part of the inflection (老いてコン|ビニ -> 老いてくる -> 老いる,
+  // はグラン -> はぐらん -> はぐる), unless all of it is the ending (食べタイ)
+  return !check.reaches_katakana_word;
 }
 }
 
@@ -88,7 +87,9 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
         auto suffix = rewritten_suffix(variant.text, deinflection.text);
         if (!suffix.empty()) {
           if (!source) {
-            source = text_processor::normalize_source(search_str);
+            char32_t next =
+                search_str_it != lookup_string.end() ? utf8::peek_next(search_str_it, lookup_string.end()) : 0;
+            source = text_processor::normalize_source(search_str, next);
           }
           if (!is_valid_rewrite(*source, suffix, deinflection)) {
             continue;

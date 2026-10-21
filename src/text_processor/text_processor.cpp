@@ -348,36 +348,34 @@ bool is_hiragana(char32_t c) { return is_in_range(c, 0x3041, 0x309f); }
 
 bool is_katakana(char32_t c) { return is_in_range(c, 0x30a1, 0x30fa); }
 
-bool is_kanji(char32_t c) {
-  return c == KANJI_ITERATION_MARK || is_in_range(c, 0x3400, 0x4dbf) || is_in_range(c, 0x4e00, 0x9fff) ||
-         is_in_range(c, 0xf900, 0xfaff);
-}
-
 // fold() for a single character of a deinflection rule, which never contains a prolonged sound mark
 char32_t fold_char(char32_t c) { return is_hiragana(c) ? c : fold(std::u32string(1, c)).front(); }
 }
 
-SourceText text_processor::normalize_source(const std::string& src) {
+SourceText text_processor::normalize_source(const std::string& src, char32_t next) {
   std::u32string text = nfkc(utf8::utf8to32(src));
   std::u32string folded = fold(text);
 
-  size_t katakana_word_end = 0;
-  bool following_word = false;
+  // katakana following hiragana starts a new word, katakana following kanji may be okurigana (分カラナイ)
+  std::vector<bool> inside_katakana_word(text.size());
+  bool katakana = false;
+  bool word = false;
   for (size_t i = 0; i < text.size(); ++i) {
-    char32_t c = text[i];
-    if (is_katakana(c)) {
-      char32_t prev = i > 0 ? text[i - 1] : 0;
-      if (!is_katakana(prev) && prev != KANA_PROLONGED_SOUND_MARK) {
-        following_word = is_hiragana(prev) || is_kanji(prev);
-      }
-    } else if (c != KANA_PROLONGED_SOUND_MARK) {
-      following_word = false;
+    bool was_katakana = katakana;
+    katakana = is_katakana(text[i]) || (was_katakana && text[i] == KANA_PROLONGED_SOUND_MARK);
+    if (katakana && !was_katakana) {
+      word = i > 0 && is_hiragana(text[i - 1]);
+    } else {
+      inside_katakana_word[i] = katakana && word;
     }
-    if (following_word) {
-      katakana_word_end = i + 1;
-    }
+    word = word && katakana;
   }
-  return {.text = std::move(text), .folded = std::move(folded), .katakana_word_end = katakana_word_end};
+  bool continues = word && (is_katakana(next) || next == KANA_PROLONGED_SOUND_MARK || is_in_range(next, 0xff66, 0xff9f));
+
+  return {.text = std::move(text),
+          .folded = std::move(folded),
+          .inside_katakana_word = std::move(inside_katakana_word),
+          .katakana_word_continues = continues};
 }
 
 SuffixCheck text_processor::check_rewritten_suffix(const SourceText& source, std::string_view suffix) {
@@ -391,7 +389,10 @@ SuffixCheck text_processor::check_rewritten_suffix(const SourceText& source, std
   for (size_t i = start; in_source && it != suffix.end(); ++i) {
     in_source = fold_char(utf8::next(it, suffix.end())) == source.folded[i];
   }
-  return {.in_source = in_source, .reaches_katakana_word = start < source.katakana_word_end};
+  // the stem takes part of the word (はグラン -> はぐる), or the word goes on past the ending (老いてコン|ビニ)
+  bool reaches_katakana_word = start < source.text.size() &&
+                               (source.inside_katakana_word[start] || source.katakana_word_continues);
+  return {.in_source = in_source, .reaches_katakana_word = reaches_katakana_word};
 }
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/translator.js#L564
