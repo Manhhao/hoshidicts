@@ -62,8 +62,7 @@ bool is_valid_rewrite(const SourceText& source, std::string_view suffix) {
   if (!check.in_source || check.collapsed_sokuon) {
     return false;
   }
-  // a following katakana word is not part of the inflection (老いてコン|ビニ -> 老いてくる -> 老いる,
-  // はグラン -> はぐらん -> はぐる), unless all of it is the ending (食べタイ)
+  // a katakana word is not inflected (はグラン -> はぐらん -> はぐる), unless all of it is the ending (食べタイ)
   return !check.reaches_katakana_word;
 }
 
@@ -87,20 +86,31 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   size_t start = std::min(scan_length, text_len);
   auto search_str_it = lookup_string.begin();
   utf8::advance(search_str_it, start, lookup_string.end());
+  // a word ending inside a katakana word following hiragana must be written that way (おデブ|キャラ), not read by
+  // converting the katakana (の|ドア -> のど -> 喉, 老いて|コンビニ -> 老いてこん -> 老いる)
+  auto scanned_end = search_str_it;
+  if (scanned_end != lookup_string.end()) {
+    utf8::next(scanned_end, lookup_string.end());
+  }
+  auto inside_katakana_word = text_processor::inside_katakana_words(utf8::utf8to32(std::string_view(
+      lookup_string.data(), static_cast<size_t>(scanned_end - lookup_string.begin()))));
 
   for (size_t i = std::min(scan_length, text_len); i > 0; i--) {
     std::string search_str(lookup_string.begin(), search_str_it);
-    auto processor_results = text_processor::process(search_str);
+    bool as_written_only = i < inside_katakana_word.size() && inside_katakana_word[i];
+    auto processor_results =
+        as_written_only ? std::vector<TextVariant>{{.text = search_str, .steps = 0}} : text_processor::process(search_str);
     std::optional<SourceText> source;  // only needed once a deinflection rewrites something
     for (auto& variant : processor_results) {
       auto deinflection_results = deinflector_.deinflect(variant.text);
       for (auto& deinflection : deinflection_results) {
         auto suffix = rewritten_suffix(variant.text, deinflection.text);
         if (!suffix.empty()) {
+          if (as_written_only) {
+            continue;
+          }
           if (!source) {
-            char32_t next =
-                search_str_it != lookup_string.end() ? utf8::peek_next(search_str_it, lookup_string.end()) : 0;
-            source = text_processor::normalize_source(search_str, next);
+            source = text_processor::normalize_source(search_str);
           }
           if (!is_valid_rewrite(*source, suffix)) {
             continue;
@@ -112,6 +122,9 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
           terms = query_.query_raw(deinflection.text);
         }
         filter_by_pos(terms, deinflection);
+        if (as_written_only) {
+          std::erase_if(terms, [&](const TermResult& term) { return term.expression != search_str; });
+        }
         query_.query_freq(terms);
 
         for (auto& term : terms) {

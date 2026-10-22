@@ -346,36 +346,36 @@ std::u32string fold(const std::u32string& text) { return standardize_kanji(katak
 
 bool is_hiragana(char32_t c) { return is_in_range(c, 0x3041, 0x309f); }
 
-bool is_katakana(char32_t c) { return is_in_range(c, 0x30a1, 0x30fa); }
+bool is_katakana(char32_t c) { return is_in_range(c, 0x30a1, 0x30fa) || is_in_range(c, 0xff66, 0xff9f); }
+
+bool is_prolonged_sound_mark(char32_t c) { return c == KANA_PROLONGED_SOUND_MARK || c == 0xff70; }
 
 // fold() for a single character of a deinflection rule, which never contains a prolonged sound mark
 char32_t fold_char(char32_t c) { return is_hiragana(c) ? c : fold(std::u32string(1, c)).front(); }
 }
 
-SourceText text_processor::normalize_source(const std::string& src, char32_t next) {
-  std::u32string text = nfkc(utf8::utf8to32(src));
-  std::u32string folded = fold(text);
-
-  // katakana following hiragana starts a new word, katakana following kanji may be okurigana (分カラナイ)
-  std::vector<bool> inside_katakana_word(text.size());
+std::vector<bool> text_processor::inside_katakana_words(const std::u32string& text) {
+  std::vector<bool> inside(text.size());
   bool katakana = false;
   bool word = false;
   for (size_t i = 0; i < text.size(); ++i) {
     bool was_katakana = katakana;
-    katakana = is_katakana(text[i]) || (was_katakana && text[i] == KANA_PROLONGED_SOUND_MARK);
+    katakana = is_katakana(text[i]) || (was_katakana && is_prolonged_sound_mark(text[i]));
     if (katakana && !was_katakana) {
       word = i > 0 && is_hiragana(text[i - 1]);
     } else {
-      inside_katakana_word[i] = katakana && word;
+      inside[i] = katakana && word;
     }
     word = word && katakana;
   }
-  bool continues = word && (is_katakana(next) || next == KANA_PROLONGED_SOUND_MARK || is_in_range(next, 0xff66, 0xff9f));
+  return inside;
+}
 
-  return {.text = std::move(text),
-          .folded = std::move(folded),
-          .inside_katakana_word = std::move(inside_katakana_word),
-          .katakana_word_continues = continues};
+SourceText text_processor::normalize_source(const std::string& src) {
+  std::u32string text = nfkc(utf8::utf8to32(src));
+  std::u32string folded = fold(text);
+  std::vector<bool> inside_katakana_word = inside_katakana_words(text);
+  return {.text = std::move(text), .folded = std::move(folded), .inside_katakana_word = std::move(inside_katakana_word)};
 }
 
 SuffixCheck text_processor::check_rewritten_suffix(const SourceText& source, std::string_view suffix) {
@@ -391,9 +391,7 @@ SuffixCheck text_processor::check_rewritten_suffix(const SourceText& source, std
     check.in_source = start > 0 && source.folded[start - 1] == c;
     start -= check.in_source ? 1 : 0;
   }
-  // the stem takes part of the word (はグラン -> はぐる), or the word goes on past the ending (老いてコン|ビニ)
-  check.reaches_katakana_word = start < source.text.size() &&
-                                (source.inside_katakana_word[start] || source.katakana_word_continues);
+  check.reaches_katakana_word = start < source.text.size() && source.inside_katakana_word[start];
   return check;
 }
 
