@@ -55,16 +55,27 @@ std::string_view rewritten_suffix(std::string_view variant, std::string_view dei
   return {it, variant.end()};
 }
 
-bool is_valid_rewrite(const SourceText& source, std::string_view suffix, const DeinflectionResult& deinflection) {
+bool is_valid_rewrite(const SourceText& source, std::string_view suffix) {
   auto check = text_processor::check_rewritten_suffix(source, suffix);
-  // characters missing from the source may explain a single rule (ていった -> ていた -> てく),
-  // not a chain of them (もうとっく -> もうとく -> もうて -> まう)
-  if (!check.in_source && deinflection.trace.size() > 1) {
+  // conjugations read every っ they produce, so one collapsed out of the conjugated part is a misreading
+  // (もうとっく -> もうとく -> もうて -> まう), unlike a stretched vowel (食べたーい -> 食べたい)
+  if (!check.in_source || check.collapsed_sokuon) {
     return false;
   }
   // a following katakana word is not part of the inflection (老いてコン|ビニ -> 老いてくる -> 老いる,
   // はグラン -> はぐらん -> はぐる), unless all of it is the ending (食べタイ)
   return !check.reaches_katakana_word;
+}
+
+// JMdict lists the auxiliary ていく only by its contraction
+std::optional<std::string_view> contracted_auxiliary(std::string_view text) {
+  if (text == "ていく") {
+    return "てく";
+  }
+  if (text == "でいく") {
+    return "でく";
+  }
+  return std::nullopt;
 }
 }
 
@@ -91,11 +102,15 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
                 search_str_it != lookup_string.end() ? utf8::peek_next(search_str_it, lookup_string.end()) : 0;
             source = text_processor::normalize_source(search_str, next);
           }
-          if (!is_valid_rewrite(*source, suffix, deinflection)) {
+          if (!is_valid_rewrite(*source, suffix)) {
             continue;
           }
         }
         auto terms = query_.query_raw(deinflection.text);
+        if (auto contracted = contracted_auxiliary(deinflection.text); terms.empty() && contracted) {
+          deinflection.text = *contracted;
+          terms = query_.query_raw(deinflection.text);
+        }
         filter_by_pos(terms, deinflection);
         query_.query_freq(terms);
 

@@ -18,7 +18,8 @@ struct SourceText {
 };
 
 struct SuffixCheck {
-  bool in_source;              // the suffix ends the source as written, e.g. no emphatic っ was collapsed in it
+  bool in_source;              // the suffix ends the source, apart from collapsed emphatic characters
+  bool collapsed_sokuon;       // an emphatic っ was collapsed out of the suffix
   bool reaches_katakana_word;  // the suffix takes part of a katakana word following hiragana, not all of it
 };
 

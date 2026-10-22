@@ -379,20 +379,22 @@ SourceText text_processor::normalize_source(const std::string& src, char32_t nex
 }
 
 SuffixCheck text_processor::check_rewritten_suffix(const SourceText& source, std::string_view suffix) {
-  if (suffix.empty()) {
-    return {.in_source = true, .reaches_katakana_word = false};
-  }
-  size_t length = utf8::distance(suffix.begin(), suffix.end());
-  size_t start = length > source.text.size() ? 0 : source.text.size() - length;
-  bool in_source = length <= source.text.size();
-  auto it = suffix.begin();
-  for (size_t i = start; in_source && it != suffix.end(); ++i) {
-    in_source = fold_char(utf8::next(it, suffix.end())) == source.folded[i];
+  // align the suffix with the end of the source, skipping emphatic characters collapsed out of it
+  SuffixCheck check{.in_source = true, .collapsed_sokuon = false, .reaches_katakana_word = false};
+  size_t start = source.text.size();
+  for (auto it = suffix.end(); check.in_source && it != suffix.begin();) {
+    char32_t c = fold_char(utf8::prior(it, suffix.begin()));
+    while (start > 0 && source.folded[start - 1] != c && is_emphatic(source.text[start - 1])) {
+      check.collapsed_sokuon = check.collapsed_sokuon || source.text[start - 1] != KANA_PROLONGED_SOUND_MARK;
+      --start;
+    }
+    check.in_source = start > 0 && source.folded[start - 1] == c;
+    start -= check.in_source ? 1 : 0;
   }
   // the stem takes part of the word (はグラン -> はぐる), or the word goes on past the ending (老いてコン|ビニ)
-  bool reaches_katakana_word = start < source.text.size() &&
-                               (source.inside_katakana_word[start] || source.katakana_word_continues);
-  return {.in_source = in_source, .reaches_katakana_word = reaches_katakana_word};
+  check.reaches_katakana_word = start < source.text.size() &&
+                                (source.inside_katakana_word[start] || source.katakana_word_continues);
+  return check;
 }
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/translator.js#L564
