@@ -1,6 +1,6 @@
 # hoshidicts
 
-This library implements a dictionary backend that works similarly to [Yomitan](https://github.com/yomidevs/yomitan). This was made for [Hoshi Reader](https://github.com/Manhhao/Hoshi-Reader). Japanese and English language processing are supported through explicit language pipelines; additional languages can add their own preprocessing, deinflection, postprocessing, and part-of-speech condition mapping.
+This library implements a dictionary backend that works similarly to [Yomitan](https://github.com/yomidevs/yomitan). This was made for [Hoshi Reader](https://github.com/Manhhao/Hoshi-Reader). Japanese, English, Chinese, and Korean language processing are supported through explicit language pipelines; additional languages can add their own preprocessing, deinflection, postprocessing, reading normalization, and part-of-speech condition mapping.
 
 A MIT version of the library is available on the [main-mit](https://github.com/Manhhao/hoshidicts/tree/main-mit) branch.
 
@@ -56,7 +56,7 @@ Returns raw bytes for file originally stored at `media_path` in term dictionary 
 ```cpp
 const LanguageProcessor& language::get(std::string_view id)
 ```
-Returns the language pipeline for a language identifier. Currently supported identifiers are `ja` and `en`.
+Returns the language pipeline for a language identifier. Currently supported identifiers are `ja`, `en`, `zh`, and `ko`.
 
 ```cpp
 std::vector<TextVariant> LanguageProcessor::preprocess(const std::string& text) const
@@ -66,7 +66,7 @@ Returns lookup variants generated before deinflection, with a step count used fo
 ```cpp
 std::vector<DeinflectionResult> LanguageProcessor::deinflect(const std::string& text) const
 ```
-Returns deinflection candidates using the selected language's rules. As this doesn't use any dictionary data, the result may include invalid deinflections.
+Returns deinflection candidates using the selected language's rules. This is a pipeline stage: pass preprocessed text and postprocess its candidates before querying dictionaries. Korean operates on decomposed compatibility jamo at this stage. As this doesn't use any dictionary data, the result may include invalid deinflections.
 
 ```cpp
 std::vector<TextVariant> LanguageProcessor::postprocess(const std::string& text) const
@@ -77,6 +77,16 @@ Returns variants generated after deinflection. Languages without postprocessors 
 uint32_t LanguageProcessor::pos_to_conditions(const std::vector<std::string>& part_of_speech) const
 ```
 Converts dictionary part-of-speech tags into the bitmask used for language-specific deinflection filtering.
+
+```cpp
+std::string LanguageProcessor::normalize_reading(const std::string& reading) const
+```
+Returns the reading used to group lookup results. Chinese applies NFC, Unicode lowercase, and Yomitan's pinyin separator removal while preserving tone marks. Japanese, English, and Korean return the reading unchanged. Dictionary readings remain unchanged for display, metadata matching, and `primary_reading` ranking.
+
+```cpp
+bool LanguageProcessor::is_text_lookup_worthy(const std::string& text) const
+```
+Provides a hint for text scanners. Chinese checks Yomitan's Chinese character ranges, including CJK ideographs, Bopomofo, and selected punctuation. Other languages currently return `true`. This does not restrict explicit lookups, including pinyin searches.
 
 ### lookup
 ```cpp
@@ -91,9 +101,52 @@ Follows a parsing strategy similar to Yomitan. Substrings of `lookup_string` are
 
 Results are filtered by language-specific part-of-speech rules. Ranking considers the requested primary reading, matched length, the best preprocessing/deinflection trace, configurable frequency ordering, Yomitan score, and reading/expression equality.
 
+### Chinese
+
+Chinese processing follows [Yomitan at `0273cbb3`](https://github.com/yomidevs/yomitan/tree/0273cbb33d774861d2470be62623dde56c8059d6/ext/js/language). It generates radical-normalized lookup variants (for example, `⼀` → `一`) and merges entries with the same expression and normalized pinyin, such as `Rì wén` and `rìwén`. The first matching dictionary's original reading is retained. Chinese has no algorithmic deinflection rules. Simplified/traditional conversion, numeric-tone conversion, and Cantonese are not included.
+
+Normalization happens during lookup grouping. Frequency and pronunciation metadata are matched against the retained reading's original spelling. Existing imported dictionaries work without reimporting; storage and direct `DictionaryQuery::query` behavior are unchanged. Pinyin lookup still uses the dictionary's original reading spelling.
+
+```cpp
+Lookup lookup(query, language::get("zh"));
+auto results = lookup.lookup("日文");
+```
+
+The C API selects Chinese with `hd_deinflector_new_for_language("zh")`. The scanner hint is available through `hd_deinflector_is_text_lookup_worthy(d, text)`, returning `0` on null input or an error. `hd_deinflector_new()` still defaults to Japanese.
+
+```sh
+hoshidicts-cli lookup zh /path/to/dictionary 日文
+hoshidicts-cli preprocess zh ⼀
+hoshidicts-cli-c lookup --language zh /path/to/dictionary 日文
+```
+
+Both lookup commands accept multiple dictionary paths. The C CLI defaults to Japanese when `--language` is omitted; the option accepts `ja`, `en`, `zh`, and `ko`.
+
+### Korean
+
+Korean processing follows Yomitan at `0273cbb3`, including all 450 transform groups and 2,682 suffix rules. Native Hangul processing reproduces the bundled hangul-js 0.2.6 behavior: preprocessing disassembles syllables into compatibility jamo, deinflection applies the rules, and postprocessing reassembles the candidates. Each preprocessing or postprocessing stage adds one step when it changes the text. This is distinct from Unicode NFD/NFC normalization; conjoining, archaic, and halfwidth jamo retain the upstream behavior.
+
+```cpp
+Lookup lookup(query, language::get("ko"));
+auto results = lookup.lookup("읽었어요"); // Can match 읽다 in a dictionary tagged with v.
+```
+
+Only `v`, `adj`, and `ida` dictionary rules map to Korean part-of-speech conditions. Inflected matches require compatible conditions, using the existing cross-dictionary condition aggregation; exact matches remain available without POS tags. Korean readings are not normalized, and the scanner hint retains the default `true` behavior. The rule engine is initialized only when Korean deinflection is used.
+
+The upstream `-로라` group contains an empty-suffix rule that generates `다` with the `ida` condition even from unrelated input. This behavior, including the same-text candidate for direct `deinflect("다")`, is retained for compatibility. Dictionary lookup still applies POS filtering.
+
+```sh
+hoshidicts-cli lookup ko /path/to/dictionary 읽었어요
+hoshidicts-cli preprocess ko 읽었어요
+hoshidicts-cli-c lookup --language ko /path/to/dictionary 읽었어요
+```
+
+The C API selects Korean with `hd_deinflector_new_for_language("ko")`. Existing imported dictionaries work without reimporting. All processing is native; building and using the library requires neither JavaScript nor a Yomitan checkout.
+
 ## Acknowledgements
 
-- [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese and English deinflection rules and descriptions, text processors | GPLv3
+- [Yomitan](https://github.com/yomidevs/yomitan): Dictionary format, Japanese, English, and Korean deinflection rules and descriptions, text processors, Chinese character ranges and pinyin normalization | GPLv3
+- [hangul-js](https://github.com/e-/Hangul.js): Korean disassembly and assembly behavior, ported from 0.2.6 | MIT
 - [glaze](https://github.com/stephenberry/glaze): MIT
 - [libdeflate](https://github.com/ebiggers/libdeflate.git): MIT
 - [xxHash](https://github.com/Cyan4973/xxHash): BSD-2-Clause

@@ -35,7 +35,7 @@ static void print_usage(const char* program) {
   printf("Usage:\n");
   printf("%s import <path/to/dictionary.zip>\n", program);
   printf("%s query <path/to/dictionary> <word>\n", program);
-  printf("%s lookup <path/to/dictionary> <lookup_string>\n", program);
+  printf("%s lookup [--language <ja|en|zh|ko>] <path/to/dictionary>... <lookup_string>\n", program);
   printf("%s kanji <path/to/dictionary> <kanji>\n", program);
 }
 
@@ -135,7 +135,7 @@ static int cmd_query(const char* db_path, const char* expression) {
   return 0;
 }
 
-static int cmd_lookup(const char* const* db_paths, int db_count, const char* lookup_string) {
+static int cmd_lookup(const char* language_id, const char* const* db_paths, int db_count, const char* lookup_string) {
   const int max_results = 8;
   const size_t scan_length = 16;
 
@@ -148,7 +148,12 @@ static int cmd_lookup(const char* const* db_paths, int db_count, const char* loo
     }
   }
 
-  hd_deinflector* d = hd_deinflector_new();
+  hd_deinflector* d = hd_deinflector_new_for_language(language_id);
+  if (d == NULL) {
+    printf("unsupported language: %s\n", language_id);
+    hd_query_free(q);
+    return 1;
+  }
   hd_lookup* l = hd_lookup_new(q, d);
 
   const hd_lookup_result* results = NULL;
@@ -162,7 +167,8 @@ static int cmd_lookup(const char* const* db_paths, int db_count, const char* loo
     return 1;
   }
 
-  printf("lookup results for: %s max_results: %d scan_length: %zu\n", lookup_string, max_results, scan_length);
+  printf("lookup results for: %s language: %s max_results: %d scan_length: %zu\n", lookup_string, language_id,
+         max_results, scan_length);
   printf("%zu results\n", count);
 
   for (size_t i = 0; i < count; i++) {
@@ -261,7 +267,18 @@ int main(int argc, char* argv[]) {
   } else if (strcmp(command, "query") == 0 && argc >= 4) {
     ret = cmd_query(argv[2], argv[3]);
   } else if (strcmp(command, "lookup") == 0 && argc >= 4) {
-    ret = cmd_lookup((const char* const*)argv + 2, argc - 3, argv[argc - 1]);
+    const char* language_id = "ja";
+    int first_dictionary = 2;
+    if (strcmp(argv[2], "--language") == 0) {
+      if (argc < 6) {
+        print_usage(argv[0]);
+        return 1;
+      }
+      language_id = argv[3];
+      first_dictionary = 4;
+    }
+    ret = cmd_lookup(language_id, (const char* const*)argv + first_dictionary, argc - first_dictionary - 1,
+                     argv[argc - 1]);
   } else if (strcmp(command, "kanji") == 0 && argc >= 4) {
     ret = cmd_kanji(argv[2], argv[3]);
   } else {

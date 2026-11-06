@@ -48,6 +48,12 @@ add_library(hoshidicts
     src/language/ja/pos.cpp
     src/language/ja/preprocessor.cpp
     src/language/ja/processor.cpp
+    src/language/ko/deinflector.cpp
+    src/language/ko/hangul.cpp
+    src/language/ko/processor.cpp
+    src/language/zh/chinese.cpp
+    src/language/zh/preprocessor.cpp
+    src/language/zh/processor.cpp
     src/query.cpp
     src/lookup.cpp
     src/hoshidicts_c.cpp

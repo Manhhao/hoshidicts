@@ -42,6 +42,10 @@ class LanguageProcessor {
   virtual std::vector<TextVariant> postprocess(const std::string& text) const = 0;
   virtual uint32_t pos_to_conditions(const std::vector<std::string>& part_of_speech) const = 0;
   virtual MissingPosPolicy missing_pos_policy() const { return MissingPosPolicy::Filter; }
+  // Normalize grouping keys without changing the dictionary's displayed reading.
+  virtual std::string normalize_reading(const std::string& reading) const { return reading; }
+  // A hint for text scanners; explicit lookups are not restricted by this predicate.
+  virtual bool is_text_lookup_worthy(const std::string&) const { return true; }
 };
 
 namespace language {

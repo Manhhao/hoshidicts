@@ -197,12 +197,14 @@ void merge_term_data(TermResult& target, TermResult source) {
   merge_term_glossaries(target, std::move(source));
 }
 
-LookupResultKey make_lookup_result_key(const TermResult& term) { return make_headword_key(term); }
+LookupResultKey make_lookup_result_key(const LanguageProcessor& language, const TermResult& term) {
+  return {term.expression, language.normalize_reading(term.reading)};
+}
 
-std::vector<TermResult> merge_lookup_terms(std::vector<TermResult> terms) {
+std::vector<TermResult> merge_lookup_terms(const LanguageProcessor& language, std::vector<TermResult> terms) {
   std::map<LookupResultKey, TermResult> term_map;
   for (auto& term : terms) {
-    auto [it, inserted] = term_map.try_emplace(make_lookup_result_key(term));
+    auto [it, inserted] = term_map.try_emplace(make_lookup_result_key(language, term));
     if (inserted) {
       it->second = std::move(term);
       continue;
@@ -426,11 +428,11 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
   auto add_lookup_terms = [&](const std::string& search_str, const std::vector<TraceCandidate>& trace_candidates,
                               std::vector<TermResult> terms) {
     remove_dictionary_redirect_only_terms(terms);
-    terms = merge_lookup_terms(std::move(terms));
+    terms = merge_lookup_terms(language_, std::move(terms));
     add_term_metadata(terms);
 
     for (auto& term : terms) {
-      auto key = make_lookup_result_key(term);
+      auto key = make_lookup_result_key(language_, term);
       auto it = result_map.find(key);
       if (it != result_map.end()) {
         // we only need the longest matched form

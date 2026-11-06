@@ -107,6 +107,14 @@ hd_deinflector* hd_deinflector_new_for_language(const char* language_id) {
   }
 }
 
+int hd_deinflector_is_text_lookup_worthy(const hd_deinflector* d, const char* text) {
+  try {
+    return d != nullptr && d->language != nullptr && text != nullptr && d->language->is_text_lookup_worthy(text);
+  } catch (...) {
+    return 0;
+  }
+}
+
 void hd_deinflector_free(hd_deinflector* d) { delete d; }
 
 // query

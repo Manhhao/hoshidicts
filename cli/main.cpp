@@ -53,6 +53,7 @@ void print_usage(const char* program) {
   std::cout << std::format("{} lookup <language> <path/to/dictionary>... <lookup_string>\n", program);
   std::cout << std::format("{} freq <path/to/dictionary> <word>\n", program);
   std::cout << std::format("{} kanji <path/to/dictionary> <kanji>\n", program);
+  std::cout << "Languages: ja, en, zh, ko\n";
 }
 
 void cmd_import(const std::string& path) {

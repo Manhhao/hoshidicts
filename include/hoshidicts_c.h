@@ -35,6 +35,8 @@ typedef struct hd_deinflector hd_deinflector;
 
 hd_deinflector* hd_deinflector_new(void);
 hd_deinflector* hd_deinflector_new_for_language(const char* language_id);
+// Scanner hint only; explicit lookups are unrestricted. Returns 0 on null input or error.
+int hd_deinflector_is_text_lookup_worthy(const hd_deinflector* d, const char* text);
 void hd_deinflector_free(hd_deinflector* d);
 
 // query
