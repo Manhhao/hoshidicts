@@ -11,6 +11,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <string_view>
 #include <utility>
@@ -50,16 +51,19 @@ struct DictionaryQuery::DictionaryData {
   memory::mapped_file blobs;
   memory::mapped_file hash_table;
   memory::mapped_file bloom_filter;
-  memory::mapped_file media;
   memory::mapped_file media_index;
+  std::mutex media_mutex;
+  ankerl::unordered_dense::map<uint64_t, memory::mapped_file> media_views;
   ZSTD_DDict* zstd_dict = nullptr;
 
   ~DictionaryData() {
     memory::unmap(blobs);
     memory::unmap(hash_table);
     memory::unmap(bloom_filter);
-    memory::unmap(media);
     memory::unmap(media_index);
+    for (const auto& [offset, view] : media_views) {
+      memory::unmap(view);
+    }
     ZSTD_freeDDict(zstd_dict);
   }
 };
@@ -77,6 +81,14 @@ DictionaryQuery::Dictionary::Dictionary(Dictionary&&) noexcept = default;
 DictionaryQuery::Dictionary& DictionaryQuery::Dictionary::operator=(Dictionary&&) noexcept = default;
 
 bool DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type) {
+  try {
+    return add_dict_(path_utf8, type);
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType type) {
   const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   uint8_t format_version = 0;
   if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
@@ -92,6 +104,7 @@ bool DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
   }
 
   Dictionary dict;
+  dict.path = path_utf8;
   Summary summary;
   std::ifstream index_file(path / "index.json", std::ios::binary);
   if (!index_file) {
@@ -134,10 +147,7 @@ bool DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
     return false;
   }
 
-  dict.data->media = memory::map_rd(path / "media.bin");
-  if (dict.data->media) {
-    dict.data->media_index = memory::map_rd(path / "media.idx");
-  }
+  dict.data->media_index = memory::map_rd(path / "media.idx");
 
   if (format_version >= 4) {
     std::ifstream f(path / "dict.zstd", std::ios::binary);
@@ -199,6 +209,33 @@ bool DictionaryQuery::try_add_kanji_dict(const std::string& path) {
   return add_dict(path, DictionaryQuery::DictionaryType::KANJI);
 }
 
+size_t DictionaryQuery::remove_dict(const std::string& path) {
+  size_t removed = 0;
+  for (auto* dicts : {&term_dicts_, &freq_dicts_, &pitch_dicts_, &kanji_dicts_}) {
+    removed += std::erase_if(*dicts, [&path](const Dictionary& d) { return d.path == path; });
+  }
+  return removed;
+}
+
+bool DictionaryQuery::set_dict_order(const std::vector<std::string>& paths) {
+  for (const auto& path : paths) {
+    const auto loaded = [&path](const std::vector<Dictionary>& dicts) {
+      return std::ranges::any_of(dicts, [&path](const Dictionary& d) { return d.path == path; });
+    };
+    if (!loaded(term_dicts_) && !loaded(freq_dicts_) && !loaded(pitch_dicts_) && !loaded(kanji_dicts_)) {
+      return false;
+    }
+  }
+  const auto rank = [&paths](const Dictionary& d) {
+    const auto it = std::ranges::find(paths, d.path);
+    return it == paths.end() ? paths.size() : static_cast<size_t>(it - paths.begin());
+  };
+  for (auto* dicts : {&term_dicts_, &freq_dicts_, &pitch_dicts_, &kanji_dicts_}) {
+    std::ranges::stable_sort(*dicts, {}, rank);
+  }
+  return true;
+}
+
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
   auto results = query_raw(expression);
   for (auto& term : results) {
@@ -217,7 +254,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
 
 std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& expression) const {
   std::vector<TermResult> results;
-  for (const auto& [name, styles, data] : term_dicts_) {
+  for (const auto& [path, name, styles, data] : term_dicts_) {
     uint64_t offset_addr = data->table(expression);
     if (offset_addr == 0) {
       continue;
@@ -343,7 +380,7 @@ void DictionaryQuery::order_glossaries(std::vector<GlossaryEntry>& glossaries) c
 
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [name, styles, data] : freq_dicts_) {
+    for (const auto& [path, name, styles, data] : freq_dicts_) {
       uint64_t offset_addr = data->table(term.expression);
       if (offset_addr == 0) {
         continue;
@@ -394,7 +431,7 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
 
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [name, styles, data] : pitch_dicts_) {
+    for (const auto& [path, name, styles, data] : pitch_dicts_) {
       uint64_t offset_addr = data->table(term.expression);
       if (offset_addr == 0) {
         continue;
@@ -465,7 +502,7 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
   KanjiResult result;
   result.character = kanji;
 
-  for (const auto& [name, styles, data] : kanji_dicts_) {
+  for (const auto& [path, name, styles, data] : kanji_dicts_) {
     uint64_t offset_addr = data->table(kanji);
     if (offset_addr == 0) {
       continue;
@@ -563,18 +600,22 @@ std::vector<char> DictionaryQuery::get_media_file(const std::string& dict_name, 
 }
 
 MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name, const std::string& media_path) const {
-  for (const auto& [name, styles, data] : term_dicts_) {
+  for (const auto& [path, name, styles, data] : term_dicts_) {
     if (name != dict_name) {
       continue;
     }
 
-    if (!data->media || !data->media_index) {
+    const auto media_file = path_utils::from_utf8(path) / "media.bin";
+    const intptr_t media = memory::open_rd(media_file);
+    if (media == -1 || !data->media_index) {
       return {};
     }
 
     const uint8_t* ptr = data->media_index.data;
     auto count = read_val<uint32_t>(ptr);
 
+    MediaFileView result{};
+    std::string header(sizeof(uint16_t) + media_path.size() + sizeof(uint32_t), '\0');
     size_t left = 0;
     size_t right = count;
     while (left < right) {
@@ -582,20 +623,27 @@ MediaFileView DictionaryQuery::get_media_file_view(const std::string& dict_name,
       uint64_t record_offset;
       std::memcpy(&record_offset, data->media_index.data + sizeof(uint32_t) + mid * sizeof(uint64_t), sizeof(uint64_t));
 
-      const uint8_t* record = data->media.data + record_offset;
+      memory::read_at(media, record_offset, header.data(), header.size());
+      const auto* record = reinterpret_cast<const uint8_t*>(header.data());
       auto path_size = read_val<uint16_t>(record);
-      std::string_view indexed_path = read_str(record, path_size);
+      std::string_view indexed_path = read_str(record, std::min<size_t>(path_size, header.size() - sizeof(uint16_t)));
       if (indexed_path < media_path) {
         left = mid + 1;
       } else if (indexed_path > media_path) {
         right = mid;
       } else {
         auto blob_size = read_val<uint32_t>(record);
-        const char* blob_data = reinterpret_cast<const char*>(record);
-        return {.data = blob_data, .size = blob_size};
+        std::lock_guard lock(data->media_mutex);
+        auto& view = data->media_views[record_offset];
+        if (!view && blob_size > 0) {
+          view = memory::map_rd(media_file, record_offset + header.size(), blob_size);
+        }
+        result = {.data = reinterpret_cast<const char*>(view.data), .size = blob_size};
+        break;
       }
     }
-    return {};
+    memory::close_rd(media);
+    return result;
   }
   return {};
 }

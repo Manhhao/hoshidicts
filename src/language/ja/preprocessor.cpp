@@ -2,15 +2,17 @@
 #include <utf8.h>
 #include <utf8proc.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
-#include "../text_variants.hpp"
 #include "ja.hpp"
 
 extern const char32_t kanji_variants[][2];
@@ -90,6 +92,7 @@ bool is_in_range(uint32_t c, uint32_t range_start, uint32_t range_end) { return 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L472
 std::u32string hiragana_to_katakana(const std::u32string& text) {
   std::u32string result;
+  result.reserve(text.size());
   const uint32_t offset = (KATAKANA_CONVERSION_RANGE_START - HIRAGANA_CONVERSION_RANGE_START);
   for (char32_t c : text) {
     if (is_in_range(c, HIRAGANA_CONVERSION_RANGE_START, HIRAGANA_CONVERSION_RANGE_END)) {
@@ -103,6 +106,7 @@ std::u32string hiragana_to_katakana(const std::u32string& text) {
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L441
 std::u32string katakana_to_hiragana(const std::u32string& text) {
   std::u32string result;
+  result.reserve(text.size());
   const uint32_t offset = (HIRAGANA_CONVERSION_RANGE_START - KATAKANA_CONVERSION_RANGE_START);
   for (char32_t c : text) {
     switch (c) {
@@ -149,6 +153,7 @@ std::u32string collapse_emphatic_sequences(const std::u32string& text, bool full
   std::u32string leading_emphatics = text.substr(0, left);
   std::u32string trailing_emphatics = text.substr(right + 1);
   std::u32string middle;
+  middle.reserve(static_cast<size_t>(right - left + 1));
   auto current_collapsed_code_point = static_cast<char32_t>(-1);
 
   for (ptrdiff_t i = left; i <= right; ++i) {
@@ -184,6 +189,7 @@ std::u32string nfkc(const std::u32string& text) {
 // https://github.com/yomidevs/yomitan/blob/3440451aecb23a43f308857969c890a55ce34a91/ext/js/language/ja/japanese.js#L489
 std::u32string alphanumeric_to_fullwidth(const std::u32string& text) {
   std::u32string result;
+  result.reserve(text.size());
   for (char32_t c : text) {
     if (is_in_range(c, U'0', U'9')) {
       c = static_cast<char32_t>(c + (0xff10 - 0x30));
@@ -208,6 +214,7 @@ std::u32string standardize_kanji(const std::u32string& text) {
   }();
 
   std::u32string result;
+  result.reserve(text.size());
   for (char32_t c : text) {
     auto it = map.find(c);
     result += it != map.end() ? it->second : c;
@@ -243,6 +250,7 @@ char32_t expand_mark(char32_t prev, char32_t mark) {
 
 std::u32string expand_iteration_marks(const std::u32string& text) {
   std::u32string result;
+  result.reserve(text.size());
   for (size_t i = 0; i < text.size(); ++i) {
     result += text[i];
     if (i + 1 < text.size()) {
@@ -259,6 +267,7 @@ std::u32string expand_iteration_marks(const std::u32string& text) {
 constexpr std::u32string_view KANJI_NUMBERS = U"〇一二三四五六七八九";
 std::u32string numbers_to_kanji(const std::u32string& text) {
   std::u32string result;
+  result.reserve(text.size());
   for (char32_t c : text) {
     if (is_in_range(c, 0xff10, 0xff19)) {
       result += KANJI_NUMBERS[c - 0xff10];
@@ -271,6 +280,7 @@ std::u32string numbers_to_kanji(const std::u32string& text) {
 
 std::u32string strip_middle_dots(const std::u32string& text) {
   std::u32string result;
+  result.reserve(text.size());
   for (char32_t c : text) {
     if (c != KATAKANA_MIDDLE_DOT) {
       result += c;
@@ -279,53 +289,96 @@ std::u32string strip_middle_dots(const std::u32string& text) {
   return result;
 }
 
-std::string process_u32(const std::string& src, const std::function<std::u32string(const std::u32string&)>& process) {
-  return utf8::utf32to8(process(utf8::utf8to32(src)));
+struct JapaneseTextProcessor {
+  std::vector<int> options;
+  std::function<std::u32string(const std::u32string&, int)> process;
+};
+
+const std::vector<JapaneseTextProcessor>& get_japanese_processors() {
+  static const std::vector<JapaneseTextProcessor> processors = {
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string { return opt == 1 ? nfkc(text) : text; }},
+      // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese-text-preprocessors.js#L66
+      {.options = {0, 1, 2},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         switch (opt) {
+           case 1:
+             return katakana_to_hiragana(text);
+           case 2:
+             return hiragana_to_katakana(text);
+           default:
+             return text;
+         }
+       }},
+      {.options = {0, 1, 2},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         switch (opt) {
+           case 1:
+             return collapse_emphatic_sequences(text, false);
+           case 2:
+             return collapse_emphatic_sequences(text, true);
+           default:
+             return text;
+         }
+       }},
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? alphanumeric_to_fullwidth(text) : text;
+       }},
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? standardize_kanji(text) : text;
+       }},
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? expand_iteration_marks(text) : text;
+       }},
+      {.options = {0, 1},
+       .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? numbers_to_kanji(text) : text;
+       }},
+      {.options = {0, 1}, .process = [](const std::u32string& text, int opt) -> std::u32string {
+         return opt == 1 ? strip_middle_dots(text) : text;
+       }}};
+  return processors;
+}
 }
 
-std::vector<language::internal::TextProcessorDefinition> get_japanese_processors() {
-  return {
-      {.process = [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, nfkc)}; }},
-      {.process =
-           [](const std::string& text) {
-             return std::vector<std::string>{text, process_u32(text, katakana_to_hiragana),
-                                             process_u32(text, hiragana_to_katakana)};
-           }},
-      {.process =
-           [](const std::string& text) {
-             return std::vector<std::string>{
-                 text,
-                 process_u32(text,
-                             [](const std::u32string& value) { return collapse_emphatic_sequences(value, false); }),
-                 process_u32(text,
-                             [](const std::u32string& value) { return collapse_emphatic_sequences(value, true); })};
-           }},
-      {.process =
-           [](const std::string& text) {
-             return std::vector<std::string>{text, process_u32(text, alphanumeric_to_fullwidth)};
-           }},
-      {.process =
-           [](const std::string& text) {
-             return std::vector<std::string>{text, process_u32(text, standardize_kanji)};
-           }},
-      {.process =
-           [](const std::string& text) {
-             return std::vector<std::string>{text, process_u32(text, expand_iteration_marks)};
-           }},
-      {.process =
-           [](const std::string& text) { return std::vector<std::string>{text, process_u32(text, numbers_to_kanji)}; }},
-      {.process = [](const std::string& text) {
-        return std::vector<std::string>{text, process_u32(text, strip_middle_dots)};
-      }}};
-}
-
-}
-
+// https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/translator.js#L564
 namespace language::ja {
 
-std::vector<TextVariant> preprocess(const std::string& text) {
-  static const auto processors = get_japanese_processors();
-  return language::internal::process_text_variants(text, processors);
+std::vector<TextVariant> preprocess(const std::string& src) {
+  std::u32string text = utf8::utf8to32(src);
+  std::vector<std::pair<std::u32string, int>> variants;
+  variants.emplace_back(std::move(text), 0);
+
+  for (const auto& processor : get_japanese_processors()) {
+    std::vector<std::pair<std::u32string, int>> next;
+    next.reserve(variants.size() * processor.options.size());
+
+    for (const auto& [variant, steps] : variants) {
+      for (int option : processor.options) {
+        auto processed = option == 0 ? variant : processor.process(variant, option);
+        int new_steps = (option == 0 || processed == variant) ? steps : steps + 1;
+
+        auto it = std::ranges::find_if(next, [&](const auto& entry) { return entry.first == processed; });
+        if (it == next.end()) {
+          next.emplace_back(std::move(processed), new_steps);
+        } else if (new_steps < it->second) {
+          it->second = new_steps;
+        }
+      }
+    }
+    std::ranges::sort(next, {}, &std::pair<std::u32string, int>::first);
+    variants = std::move(next);
+  }
+
+  std::vector<TextVariant> result;
+  result.reserve(variants.size());
+  for (const auto& [variant, steps] : variants) {
+    result.emplace_back(utf8::utf32to8(variant), steps);
+  }
+  return result;
 }
 
 std::vector<TextVariant> postprocess(const std::string& text) { return {{.text = text, .steps = 0}}; }

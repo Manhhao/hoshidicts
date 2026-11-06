@@ -6,8 +6,10 @@
 #include <optional>
 #include <ranges>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include "hoshidicts/importer.hpp"
 #include "hoshidicts/language.hpp"
@@ -174,6 +176,33 @@ int hd_query_add_pitch_dict(hd_query* q, const char* path) {
 int hd_query_add_kanji_dict(hd_query* q, const char* path) {
   try {
     return q != nullptr && q->query != nullptr && path != nullptr && q->query->try_add_kanji_dict(path) ? 0 : 1;
+  } catch (...) {
+    return 1;
+  }
+}
+
+size_t hd_query_remove_dict(hd_query* q, const char* path) {
+  try {
+    return q != nullptr && q->query != nullptr && path != nullptr ? q->query->remove_dict(path) : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+int hd_query_set_dict_order(hd_query* q, const char* const* paths, size_t count) {
+  try {
+    if (q == nullptr || q->query == nullptr || (count != 0 && paths == nullptr)) {
+      return 1;
+    }
+    std::vector<std::string> order;
+    order.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+      if (paths[i] == nullptr) {
+        return 1;
+      }
+      order.emplace_back(paths[i]);
+    }
+    return q->query->set_dict_order(order) ? 0 : 1;
   } catch (...) {
     return 1;
   }

@@ -130,9 +130,17 @@ bool Zip::parse_central_directory() {
     auto lfh_offset = read_at<uint32_t>(base, pos + 42);
     e.name.assign(reinterpret_cast<const char*>(base + pos + 46), name_len);
 
+    if (lfh_offset > file.size || file.size - lfh_offset < 30) {
+      return false;
+    }
     auto lfh_name_len = read_at<uint16_t>(base, lfh_offset + 26);
     auto lfh_extra_len = read_at<uint16_t>(base, lfh_offset + 28);
     e.data_offset = lfh_offset + 30 + lfh_name_len + lfh_extra_len;
+
+    const uint32_t data_size = e.compression_method == 0 ? e.uncompressed_size : e.compressed_size;
+    if (e.data_offset > file.size || file.size - e.data_offset < data_size) {
+      return false;
+    }
 
     entries.push_back(std::move(e));
     pos += 46 + name_len + extra_len + comment_len;
