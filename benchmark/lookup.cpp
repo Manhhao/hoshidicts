@@ -6,10 +6,11 @@
 #include <fstream>
 #include <iostream>
 #include <numeric>
+#include <string>
 #include <string_view>
 #include <vector>
 
-#include "hoshidicts/deinflector.hpp"
+#include "hoshidicts/language.hpp"
 #include "hoshidicts/query.hpp"
 
 namespace {
@@ -31,21 +32,24 @@ std::vector<std::string> read_word_list(const std::string& path) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 5) {
+  if (argc < 6) {
     std::cout << std::format(
-        "{} <csv_path> <iterations> --term <dict_path>... [--freq <dict_path>...] [--pitch <dict_path>...]\n", argv[0]);
+        "{} <language> <csv_path> <iterations> --term <dict_path>... [--freq <dict_path>...] "
+        "[--pitch <dict_path>...]\n",
+        argv[0]);
     return 1;
   }
 
-  const std::string csv_path = argv[1];
-  const int iterations = std::stoi(argv[2]);
+  const std::string language_id = argv[1];
+  const std::string csv_path = argv[2];
+  const int iterations = std::stoi(argv[3]);
   const std::vector<std::string> words = read_word_list(csv_path);
 
   std::vector<std::string> term_paths;
   std::vector<std::string> freq_paths;
   std::vector<std::string> pitch_paths;
   std::vector<std::string>* current = &term_paths;
-  for (int i = 3; i < argc; ++i) {
+  for (int i = 4; i < argc; ++i) {
     const std::string_view arg = argv[i];
     if (arg == "--term") {
       current = &term_paths;
@@ -69,8 +73,8 @@ int main(int argc, char** argv) {
     query.add_pitch_dict(path);
   }
 
-  Deinflector deinflector;
-  Lookup lookup(query, deinflector);
+  const auto& language = language::get(language_id);
+  Lookup lookup(query, language);
 
   std::vector<double> durations;
   durations.reserve(static_cast<size_t>(iterations) * words.size());
@@ -93,7 +97,8 @@ int main(int argc, char** argv) {
   const double total = std::accumulate(durations.begin(), durations.end(), 0.0);
   const double average = total / durations.size();
 
-  std::cout << std::format("words: {} ({}) iterations: {}\n", csv_path, words.size(), iterations);
+  std::cout << std::format("words: {} ({}) language: {} iterations: {}\n", csv_path, words.size(), language.id(),
+                           iterations);
   std::cout << std::format("total: {:.2f}ms\n", total);
   std::cout << std::format("avg: {:.2f}ms\n", average);
   std::cout << std::format("min: {:.2f}ms\n", *min);

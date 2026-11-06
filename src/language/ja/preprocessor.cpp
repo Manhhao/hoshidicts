@@ -1,10 +1,9 @@
-#include "text_processor.hpp"
-
 #include <ankerl/unordered_dense.h>
 #include <utf8.h>
 #include <utf8proc.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <ranges>
@@ -14,14 +13,12 @@
 #include <utility>
 #include <vector>
 
+#include "ja.hpp"
+
 extern const char32_t kanji_variants[][2];
 extern const unsigned kanji_variants_count;
 
 namespace {
-struct TextProcessor {
-  std::vector<int> options;
-  std::function<std::u32string(const std::u32string&, int)> process;
-};
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L21
 constexpr uint32_t KATAKANA_SMALL_KA = 0x30f5;
@@ -53,7 +50,6 @@ const std::unordered_map<char32_t, std::u32string> VOWEL_TO_KANA{
     {U'e', U"ぇえけげせぜてでねへべぺめれゑヶェエケゲセゼテデネヘベペメレヱヶヹ"},
     {U'o', U"ぉおこごそぞとどのほぼぽもょよろをォオコゴソゾトドノホボポモョヨロヲヺ"}};
 
-// https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L131
 std::unordered_map<char32_t, char32_t> build_kana_to_vowel_map() {
   std::unordered_map<char32_t, char32_t> map;
   for (const auto& [vowel, kana_string] : VOWEL_TO_KANA) {
@@ -118,7 +114,7 @@ std::u32string katakana_to_hiragana(const std::u32string& text) {
       case KATAKANA_SMALL_KE:
         break;
       case KANA_PROLONGED_SOUND_MARK:
-        if (result.length() > 0) {
+        if (!result.empty()) {
           const auto prolonged = get_prolonged_hiragana(result.at(result.length() - 1));
           if (prolonged != 0) {
             c = prolonged;
@@ -293,8 +289,13 @@ std::u32string strip_middle_dots(const std::u32string& text) {
   return result;
 }
 
-const std::vector<TextProcessor>& get_japanese_processors() {
-  static const std::vector<TextProcessor> processors = {
+struct JapaneseTextProcessor {
+  std::vector<int> options;
+  std::function<std::u32string(const std::u32string&, int)> process;
+};
+
+const std::vector<JapaneseTextProcessor>& get_japanese_processors() {
+  static const std::vector<JapaneseTextProcessor> processors = {
       {.options = {0, 1},
        .process = [](const std::u32string& text, int opt) -> std::u32string { return opt == 1 ? nfkc(text) : text; }},
       // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese-text-preprocessors.js#L66
@@ -344,7 +345,9 @@ const std::vector<TextProcessor>& get_japanese_processors() {
 }
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/translator.js#L564
-std::vector<TextVariant> text_processor::process(const std::string& src) {
+namespace language::ja {
+
+std::vector<TextVariant> preprocess(const std::string& src) {
   std::u32string text = utf8::utf8to32(src);
   std::vector<std::pair<std::u32string, int>> variants;
   variants.emplace_back(std::move(text), 0);
@@ -376,4 +379,8 @@ std::vector<TextVariant> text_processor::process(const std::string& src) {
     result.emplace_back(utf8::utf32to8(variant), steps);
   }
   return result;
+}
+
+std::vector<TextVariant> postprocess(const std::string& text) { return {{.text = text, .steps = 0}}; }
+
 }

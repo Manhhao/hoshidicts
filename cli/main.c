@@ -1,15 +1,41 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "hoshidicts_c.h"
+
+static double monotonic_milliseconds(void) {
+#ifdef _WIN32
+  LARGE_INTEGER frequency;
+  LARGE_INTEGER counter;
+  if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&counter)) {
+    return 0.0;
+  }
+  return (double)counter.QuadPart * 1000.0 / (double)frequency.QuadPart;
+#else
+  struct timespec value;
+  if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+    return 0.0;
+  }
+  return (double)value.tv_sec * 1000.0 + (double)value.tv_nsec / 1e6;
+#endif
+}
 
 static void print_usage(const char* program) {
   printf("Usage:\n");
   printf("%s import <path/to/dictionary.zip>\n", program);
   printf("%s query <path/to/dictionary> <word>\n", program);
-  printf("%s lookup <path/to/dictionary> <lookup_string>\n", program);
+  printf("%s lookup [--language <ja|en|zh|ko>] <path/to/dictionary>... <lookup_string>\n", program);
   printf("%s kanji <path/to/dictionary> <kanji>\n", program);
 }
 
@@ -24,14 +50,34 @@ static size_t utf8_length(const char* text) {
 }
 
 static int cmd_import(const char* path) {
-  char output_dir[256] = ".";
   const char* parent = strrchr(path, '/');
-  if (parent) {
-    memcpy(output_dir, path, parent - path);
-    output_dir[parent - path] = '\0';
+#ifdef _WIN32
+  const char* backslash = strrchr(path, '\\');
+  if (parent == NULL || (backslash != NULL && backslash > parent)) {
+    parent = backslash;
+  }
+#endif
+  char* output_dir = NULL;
+  if (parent != NULL) {
+    size_t length = (size_t)(parent - path);
+#ifdef _WIN32
+    if (length == 0 || (length == 2 && path[1] == ':')) {
+#else
+    if (length == 0) {
+#endif
+      length++;
+    }
+    output_dir = malloc(length + 1);
+    if (output_dir == NULL) {
+      printf("failed to allocate output path\n");
+      return 1;
+    }
+    memcpy(output_dir, path, length);
+    output_dir[length] = '\0';
   }
 
-  hd_import_result* ir = hd_import(path, output_dir, false);
+  hd_import_result* ir = hd_import(path, output_dir == NULL ? "." : output_dir, false);
+  free(output_dir);
   if (ir == NULL) {
     printf("failed to import dictionary\n");
     return 1;
@@ -89,7 +135,7 @@ static int cmd_query(const char* db_path, const char* expression) {
   return 0;
 }
 
-static int cmd_lookup(const char* const* db_paths, int db_count, const char* lookup_string) {
+static int cmd_lookup(const char* language_id, const char* const* db_paths, int db_count, const char* lookup_string) {
   const int max_results = 8;
   const size_t scan_length = 16;
 
@@ -102,7 +148,12 @@ static int cmd_lookup(const char* const* db_paths, int db_count, const char* loo
     }
   }
 
-  hd_deinflector* d = hd_deinflector_new();
+  hd_deinflector* d = hd_deinflector_new_for_language(language_id);
+  if (d == NULL) {
+    printf("unsupported language: %s\n", language_id);
+    hd_query_free(q);
+    return 1;
+  }
   hd_lookup* l = hd_lookup_new(q, d);
 
   const hd_lookup_result* results = NULL;
@@ -116,7 +167,8 @@ static int cmd_lookup(const char* const* db_paths, int db_count, const char* loo
     return 1;
   }
 
-  printf("lookup results for: %s max_results: %d scan_length: %zu\n", lookup_string, max_results, scan_length);
+  printf("lookup results for: %s language: %s max_results: %d scan_length: %zu\n", lookup_string, language_id,
+         max_results, scan_length);
   printf("%zu results\n", count);
 
   for (size_t i = 0; i < count; i++) {
@@ -206,9 +258,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  struct timespec t0;
-  struct timespec t1;
-  clock_gettime(CLOCK_MONOTONIC, &t0);
+  double start_ms = monotonic_milliseconds();
   int ret;
 
   const char* command = argv[1];
@@ -217,7 +267,18 @@ int main(int argc, char* argv[]) {
   } else if (strcmp(command, "query") == 0 && argc >= 4) {
     ret = cmd_query(argv[2], argv[3]);
   } else if (strcmp(command, "lookup") == 0 && argc >= 4) {
-    ret = cmd_lookup((const char* const*)argv + 2, argc - 3, argv[argc - 1]);
+    const char* language_id = "ja";
+    int first_dictionary = 2;
+    if (strcmp(argv[2], "--language") == 0) {
+      if (argc < 6) {
+        print_usage(argv[0]);
+        return 1;
+      }
+      language_id = argv[3];
+      first_dictionary = 4;
+    }
+    ret = cmd_lookup(language_id, (const char* const*)argv + first_dictionary, argc - first_dictionary - 1,
+                     argv[argc - 1]);
   } else if (strcmp(command, "kanji") == 0 && argc >= 4) {
     ret = cmd_kanji(argv[2], argv[3]);
   } else {
@@ -225,8 +286,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  clock_gettime(CLOCK_MONOTONIC, &t1);
-  double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+  double ms = monotonic_milliseconds() - start_ms;
   printf("runtime: %.2fms\n", ms);
   return ret;
 }

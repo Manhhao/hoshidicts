@@ -4,15 +4,13 @@
 #include <string>
 #include <vector>
 
-#include "deinflector.hpp"
+#include "language.hpp"
 #include "query.hpp"
 
 struct LookupResult {
   std::string matched;
-  std::string deinflected;
-  std::vector<TransformGroup> trace;
   TermResult term;
-  int preprocessor_steps;
+  std::vector<TraceCandidate> trace_candidates;
 };
 
 enum class LookupFrequencyOrder { Auto, Ascending, Descending, Disabled };
@@ -25,13 +23,13 @@ struct LookupOptions {
 
 class Lookup {
  public:
-  Lookup(DictionaryQuery& query, Deinflector& deinflector) : query_(query), deinflector_(deinflector) {};
+  Lookup(DictionaryQuery& query, const LanguageProcessor& language) : query_(query), language_(language) {};
   std::vector<LookupResult> lookup(const std::string& lookup_string, int max_results = 16, size_t scan_length = 16,
                                    const LookupOptions& options = {}) const;
 
  private:
-  static void filter_by_pos(std::vector<TermResult>& terms, const DeinflectionResult& d);
+  void filter_by_pos(std::vector<TermResult>& terms, const DeinflectionResult& d) const;
 
   DictionaryQuery& query_;
-  Deinflector& deinflector_;
+  const LanguageProcessor& language_;
 };

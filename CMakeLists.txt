@@ -35,9 +35,25 @@ add_library(hoshidicts
     src/memory/memory.cpp
     src/zip/zip.cpp
     src/json/yomitan_parser.cpp
-    src/text_processor/text_processor.cpp
-    src/text_processor/kanji_variants.cpp
-    src/deinflector.cpp
+    src/language/condition_mapper.cpp
+    src/language/language.cpp
+    src/language/text_variants.cpp
+    src/language/transform_engine.cpp
+    src/language/en/deinflector.cpp
+    src/language/en/pos.cpp
+    src/language/en/preprocessor.cpp
+    src/language/en/processor.cpp
+    src/language/ja/deinflector.cpp
+    src/language/ja/kanji_variants.cpp
+    src/language/ja/pos.cpp
+    src/language/ja/preprocessor.cpp
+    src/language/ja/processor.cpp
+    src/language/ko/deinflector.cpp
+    src/language/ko/hangul.cpp
+    src/language/ko/processor.cpp
+    src/language/zh/chinese.cpp
+    src/language/zh/preprocessor.cpp
+    src/language/zh/processor.cpp
     src/query.cpp
     src/lookup.cpp
     src/hoshidicts_c.cpp
