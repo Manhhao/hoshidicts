@@ -29,8 +29,7 @@ add_subdirectory(external/libdeflate)
 add_subdirectory(external/utf8proc)
 
 add_library(hoshidicts
-    src/hash/hash.cpp
-    src/hash/bloom.cpp
+    src/hash/phf.cpp
     src/importer.cpp
     src/memory/memory.cpp
     src/zip/zip.cpp

@@ -15,7 +15,7 @@
 #include <string_view>
 #include <vector>
 
-#include "hash/hash.hpp"
+#include "hash/phf.hpp"
 #include "hoshidicts/importer.hpp"
 #include "json/yomitan_parser.hpp"
 #include "memory/memory.hpp"
@@ -44,11 +44,9 @@ ZSTD_DCtx* thread_dctx() {
 
 struct DictionaryQuery::DictionaryData {
   int version;
-  hash::linear table;
-  hash::bloom bloom;
+  hash::phf table;
   memory::mapped_file blobs;
-  memory::mapped_file hash_table;
-  memory::mapped_file bloom_filter;
+  memory::mapped_file phf_table;
   memory::mapped_file media_index;
   std::mutex media_mutex;
   ankerl::unordered_dense::map<uint64_t, memory::mapped_file> media_views;
@@ -56,8 +54,7 @@ struct DictionaryQuery::DictionaryData {
 
   ~DictionaryData() {
     memory::unmap(blobs);
-    memory::unmap(hash_table);
-    memory::unmap(bloom_filter);
+    memory::unmap(phf_table);
     memory::unmap(media_index);
     for (const auto& [offset, view] : media_views) {
       memory::unmap(view);
@@ -122,22 +119,16 @@ void DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType typ
   dict.data = std::make_unique<DictionaryData>();
   dict.data->version = version;
 
-  dict.data->hash_table = memory::map_rd(path / "hash.table");
-  if (!dict.data->hash_table) {
+  if (!std::filesystem::exists(path / "phf.table") && !hash::phf::migrate(path)) {
     return;
   }
-  if (!dict.data->table.load(dict.data->hash_table.data, dict.data->hash_table.size)) {
+  dict.data->phf_table = memory::map_rd(path / "phf.table");
+  if (!dict.data->phf_table) {
     return;
   }
-
-  dict.data->bloom_filter = memory::map_rd(path / "bloom.filter");
-  if (!dict.data->bloom_filter) {
+  if (!dict.data->table.load(dict.data->phf_table.data, dict.data->phf_table.size)) {
     return;
   }
-  if (!dict.data->bloom.load(dict.data->bloom_filter.data, dict.data->bloom_filter.size)) {
-    return;
-  }
-  dict.data->table.set_bloom(&dict.data->bloom);
 
   dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
@@ -218,16 +209,15 @@ std::vector<TermResult> DictionaryQuery::query(const std::string& expression) co
 std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
   std::map<std::pair<std::string_view, std::string_view>, TermResult> term_map;
   for (const auto& [path, name, styles, data] : term_dicts_) {
-    uint64_t offset_addr = data->table(expression);
-    if (offset_addr == 0) {
+    auto location = data->table(expression);
+    if (!location) {
       continue;
     }
-    const uint8_t* index_addr = data->blobs.data + offset_addr;
+    const uint8_t* index_addr = data->blobs.data + location->offset;
 
-    auto count = read_val<uint32_t>(index_addr);
+    uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
     for (uint32_t i = 0; i < count; i++) {
-      auto offset = read_val<uint64_t>(index_addr);
-      const uint8_t* blob_addr = data->blobs.data + offset;
+      const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
       // first byte encodes term (0) or meta (1) entry
       auto type = read_val<uint8_t>(blob_addr);
@@ -314,17 +304,16 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [path, name, styles, data] : freq_dicts_) {
-      uint64_t offset_addr = data->table(term.expression);
-      if (offset_addr == 0) {
+      auto location = data->table(term.expression);
+      if (!location) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + offset_addr;
-      auto count = read_val<uint32_t>(index_addr);
+      const uint8_t* index_addr = data->blobs.data + location->offset;
+      uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
 
       std::vector<Frequency> frequencies;
       for (uint32_t i = 0; i < count; i++) {
-        auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs.data + offset;
+        const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
         auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
@@ -365,18 +354,17 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [path, name, styles, data] : pitch_dicts_) {
-      uint64_t offset_addr = data->table(term.expression);
-      if (offset_addr == 0) {
+      auto location = data->table(term.expression);
+      if (!location) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + offset_addr;
-      auto count = read_val<uint32_t>(index_addr);
+      const uint8_t* index_addr = data->blobs.data + location->offset;
+      uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
 
       std::vector<Pitch> pitches;
       std::vector<std::string> transcriptions;
       for (uint32_t i = 0; i < count; i++) {
-        auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs.data + offset;
+        const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
         auto type = read_val<uint8_t>(blob_addr);
         if (type != 1) {
@@ -436,16 +424,15 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
   result.character = kanji;
 
   for (const auto& [path, name, styles, data] : kanji_dicts_) {
-    uint64_t offset_addr = data->table(kanji);
-    if (offset_addr == 0) {
+    auto location = data->table(kanji);
+    if (!location) {
       continue;
     }
-    const uint8_t* index_addr = data->blobs.data + offset_addr;
-    auto count = read_val<uint32_t>(index_addr);
+    const uint8_t* index_addr = data->blobs.data + location->offset;
+    uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
 
     for (uint32_t i = 0; i < count; i++) {
-      auto offset = read_val<uint64_t>(index_addr);
-      const uint8_t* blob_addr = data->blobs.data + offset;
+      const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
       auto type = read_val<uint8_t>(blob_addr);
       if (type != 2) {

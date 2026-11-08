@@ -23,8 +23,7 @@
 #include <thread>
 #include <vector>
 
-#include "hash/bloom.hpp"
-#include "hash/hash.hpp"
+#include "hash/phf.hpp"
 #include "json/yomitan_parser.hpp"
 #include "path_utils.hpp"
 #include "zip/zip.hpp"
@@ -598,7 +597,7 @@ void write_kanji(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
 }
 
 std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
-                                     std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
+                                     std::vector<std::pair<uint64_t, hash::phf::location>>& hash_entries) {
   std::vector<char> offset_buf;
   radix_sort(offsets);
   for (size_t i = 0; i < offsets.size();) {
@@ -607,7 +606,12 @@ std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>&
       j++;
     }
 
-    hash_entries.emplace_back(offsets[i].first, write_offset);
+    if (j - i == 1) {
+      hash_entries.emplace_back(offsets[i].first, hash::phf::location{.offset = offsets[i].second, .single = true});
+      i = j;
+      continue;
+    }
+    hash_entries.emplace_back(offsets[i].first, hash::phf::location{.offset = write_offset, .single = false});
 
     auto count = static_cast<uint32_t>(j - i);
     write_val<uint32_t>(offset_buf, count);
@@ -729,15 +733,12 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("empty dictionary");
     }
 
-    std::vector<std::pair<uint64_t, uint64_t>> hash_entries;
+    std::vector<std::pair<uint64_t, hash::phf::location>> hash_entries;
     auto offset_buf = build_offset_index(offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
     auto hash_thread = std::async(std::launch::async, [&hash_entries, &dict_path]() {
-      hash::linear table;
-      table.build_to_file(hash_entries, dict_path / "hash.table");
-      auto hashes = hash_entries | std::views::keys | std::ranges::to<std::vector>();
-      hash::bloom::build_to_file(hashes, dict_path / "bloom.filter");
+      hash::phf::build_to_file(hash_entries, dict_path / "phf.table");
     });
 
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
