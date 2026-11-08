@@ -347,6 +347,7 @@ void Deinflector::init_transforms() {
            "Usage: Attach て to the continuative form (連用形) of verbs after euphonic change form, くて to the stem "
            "of i-adjectives."});
   add_rule({.from = "くて", .to = "い", .conditions_in = TE, .conditions_out = ADJ_I, .group_id = id});
+  add_rule({.from = "くって", .to = "い", .conditions_in = TE, .conditions_out = ADJ_I, .group_id = id});
   add_rule({.from = "て", .to = "る", .conditions_in = TE, .conditions_out = V1, .group_id = id});
   add_rule({.from = "いて", .to = "く", .conditions_in = TE, .conditions_out = V5, .group_id = id});
   add_rule({.from = "いで", .to = "ぐ", .conditions_in = TE, .conditions_out = V5, .group_id = id});

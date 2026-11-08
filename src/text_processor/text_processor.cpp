@@ -93,6 +93,12 @@ char32_t get_prolonged_hiragana(char32_t prev) {
 
 bool is_in_range(uint32_t c, uint32_t range_start, uint32_t range_end) { return c >= range_start && c <= range_end; }
 
+bool is_hiragana(char32_t c) { return is_in_range(c, 0x3041, 0x309f); }
+
+bool is_katakana(char32_t c) { return is_in_range(c, 0x30a1, 0x30fa) || is_in_range(c, 0xff66, 0xff9f); }
+
+bool is_sokuon(char32_t c) { return c == HIRAGANA_SMALL_TSU || c == KATAKANA_SMALL_TSU; }
+
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/ja/japanese.js#L472
 std::u32string hiragana_to_katakana(const std::u32string& text) {
   std::u32string result;
@@ -293,6 +299,28 @@ std::u32string strip_middle_dots(const std::u32string& text) {
   return result;
 }
 
+size_t katakana_word_length(const std::u32string& text) {
+  size_t start = text.size();
+  while (start > 0 && (is_katakana(text[start - 1]) || text[start - 1] == KANA_PROLONGED_SOUND_MARK)) {
+    start--;
+  }
+  while (start < text.size() && text[start] == KANA_PROLONGED_SOUND_MARK) {
+    start++;
+  }
+  return start > 0 && start < text.size() && is_hiragana(text[start - 1]) ? text.size() - start : 0;
+}
+
+size_t max_rewrite(const std::u32string& source, const std::u32string& variant) {
+  size_t length = 0;
+  for (size_t s = source.size(); s > 0 && length < variant.size(); s--, length++) {
+    bool removable = is_sokuon(source[s - 1]) || source[s - 1] == KATAKANA_MIDDLE_DOT;
+    if (removable && !is_sokuon(variant[variant.size() - length - 1])) {
+      break;
+    }
+  }
+  return length;
+}
+
 const std::vector<TextProcessor>& get_japanese_processors() {
   static const std::vector<TextProcessor> processors = {
       {.options = {0, 1},
@@ -344,10 +372,14 @@ const std::vector<TextProcessor>& get_japanese_processors() {
 }
 
 // https://github.com/yomidevs/yomitan/blob/81d17d877fb18c62ba826210bf6db2b7f4d4deed/ext/js/language/translator.js#L564
-std::vector<TextVariant> text_processor::process(const std::string& src) {
+std::vector<TextVariant> text_processor::process(const std::string& src, char32_t next_char) {
   std::u32string text = utf8::utf8to32(src);
+  size_t katakana_word = katakana_word_length(text);
+  if (katakana_word > 0 && (is_katakana(next_char) || next_char == KANA_PROLONGED_SOUND_MARK)) {
+    return {{.text = src, .steps = 0, .max_rewrite = 0}};
+  }
   std::vector<std::pair<std::u32string, int>> variants;
-  variants.emplace_back(std::move(text), 0);
+  variants.emplace_back(text, 0);
 
   for (const auto& processor : get_japanese_processors()) {
     std::vector<std::pair<std::u32string, int>> next;
@@ -373,7 +405,10 @@ std::vector<TextVariant> text_processor::process(const std::string& src) {
   std::vector<TextVariant> result;
   result.reserve(variants.size());
   for (const auto& [variant, steps] : variants) {
-    result.emplace_back(utf8::utf32to8(variant), steps);
+    result.push_back({.text = utf8::utf32to8(variant),
+                      .steps = steps,
+                      .min_rewrite = katakana_word,
+                      .max_rewrite = max_rewrite(text, variant)});
   }
   return result;
 }

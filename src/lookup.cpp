@@ -45,6 +45,14 @@ std::optional<int> get_freq_value_for_dict(const TermResult& term, std::string_v
 bool matches_primary_reading(const TermResult& term, std::string_view primary_reading) {
   return term.reading == primary_reading;
 }
+
+size_t rewritten_chars(std::string_view variant, std::string_view deinflected) {
+  auto it = std::ranges::mismatch(variant, deinflected).in1;
+  while (it != variant.begin() && it != variant.end() && (*it & 0xc0) == 0x80) {
+    --it;
+  }
+  return utf8::distance(it, variant.end());
+}
 }
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
@@ -58,10 +66,15 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
 
   for (size_t i = std::min(scan_length, text_len); i > 0; i--) {
     std::string search_str(lookup_string.begin(), search_str_it);
-    auto processor_results = text_processor::process(search_str);
+    char32_t next_char = search_str_it != lookup_string.end() ? utf8::peek_next(search_str_it, lookup_string.end()) : 0;
+    auto processor_results = text_processor::process(search_str, next_char);
     for (auto& variant : processor_results) {
       auto deinflection_results = deinflector_.deinflect(variant.text);
       for (auto& deinflection : deinflection_results) {
+        size_t rewritten = rewritten_chars(variant.text, deinflection.text);
+        if (rewritten > variant.max_rewrite || (rewritten > 0 && rewritten < variant.min_rewrite)) {
+          continue;
+        }
         auto terms = query_.query_raw(deinflection.text);
         filter_by_pos(terms, deinflection);
         query_.query_freq(terms);
