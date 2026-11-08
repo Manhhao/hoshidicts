@@ -90,6 +90,13 @@ void write_str(std::vector<char>& out, std::string_view value) {
   std::memcpy(out.data() + old_size, value.data(), value.size());
 }
 
+void write_ints(std::vector<char>& out, const std::vector<int>& values) {
+  write_val<uint16_t>(out, values.size());
+  for (int value : values) {
+    write_val<int32_t>(out, value);
+  }
+}
+
 void write_bytes(std::vector<char>& out, const void* data, size_t n) {
   const size_t old_size = out.size();
   out.resize(old_size + n);
@@ -303,22 +310,60 @@ ProcessedFile process_meta_bank(const std::string& content) {
   }
 
   for (auto& meta : out) {
-    uint64_t offset = processed.data.size();
     std::string_view expr = meta.expression;
     std::string_view mode = meta.mode;
     std::string_view data = meta.data.str;
+    processed.count++;
+    processed.meta_counts[std::string(mode)]++;
 
-    write_val<uint8_t>(processed.data, 1);
+    ParsedFrequency frequency;
+    ParsedPitch pitch;
+    bool parsed = false;
+    if (mode == "freq") {
+      parsed = yomitan_parser::parse_frequency(data, frequency);
+    } else if (mode == "pitch") {
+      parsed = yomitan_parser::parse_pitch(data, pitch);
+    } else if (mode == "ipa") {
+      parsed = yomitan_parser::parse_ipa(data, pitch);
+    }
+    if (!parsed) {
+      continue;
+    }
+
+    uint64_t offset = processed.data.size();
+    write_val<uint8_t>(processed.data, 3);
     write_val<uint16_t>(processed.data, expr.size());
     write_str(processed.data, expr);
     write_val<uint8_t>(processed.data, mode.size());
     write_str(processed.data, mode);
-    write_val<uint32_t>(processed.data, data.size());
-    write_str(processed.data, data);
+    if (mode == "freq") {
+      write_val<uint16_t>(processed.data, frequency.reading.size());
+      write_str(processed.data, frequency.reading);
+      write_val<int32_t>(processed.data, frequency.value);
+      write_val<uint16_t>(processed.data, frequency.display_value.size());
+      write_str(processed.data, frequency.display_value);
+    } else if (mode == "pitch") {
+      write_val<uint16_t>(processed.data, pitch.reading.size());
+      write_str(processed.data, pitch.reading);
+      write_val<uint16_t>(processed.data, pitch.pitches.size());
+      for (const auto& accent : pitch.pitches) {
+        write_val<int32_t>(processed.data, accent.position);
+        write_val<uint16_t>(processed.data, accent.pattern.size());
+        write_str(processed.data, accent.pattern);
+        write_ints(processed.data, accent.nasal);
+        write_ints(processed.data, accent.devoice);
+      }
+    } else {
+      write_val<uint16_t>(processed.data, pitch.reading.size());
+      write_str(processed.data, pitch.reading);
+      write_val<uint16_t>(processed.data, pitch.transcriptions.size());
+      for (std::string_view transcription : pitch.transcriptions) {
+        write_val<uint16_t>(processed.data, transcription.size());
+        write_str(processed.data, transcription);
+      }
+    }
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
-    processed.count++;
-    processed.meta_counts[std::string(mode)]++;
   }
 
   processed.meta_counts["total"] = processed.count;

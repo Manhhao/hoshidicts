@@ -36,6 +36,60 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
   return result;
 }
 
+std::vector<int> read_ints(const uint8_t*& addr) {
+  std::vector<int> result(read_val<uint16_t>(addr));
+  for (int& value : result) {
+    value = read_val<int32_t>(addr);
+  }
+  return result;
+}
+
+bool read_frequency(uint8_t type, const uint8_t* addr, ParsedFrequency& out) {
+  if (type == 1) {
+    auto size = read_val<uint32_t>(addr);
+    return yomitan_parser::parse_frequency(read_str(addr, size), out);
+  }
+  auto reading_len = read_val<uint16_t>(addr);
+  out.reading = read_str(addr, reading_len);
+  out.value = read_val<int32_t>(addr);
+  auto display_len = read_val<uint16_t>(addr);
+  out.display_value = read_str(addr, display_len);
+  return true;
+}
+
+bool read_pitch(uint8_t type, const uint8_t* addr, ParsedPitch& out) {
+  if (type == 1) {
+    auto size = read_val<uint32_t>(addr);
+    return yomitan_parser::parse_pitch(read_str(addr, size), out);
+  }
+  auto reading_len = read_val<uint16_t>(addr);
+  out.reading = read_str(addr, reading_len);
+  out.pitches.resize(read_val<uint16_t>(addr));
+  for (auto& accent : out.pitches) {
+    accent.position = read_val<int32_t>(addr);
+    auto pattern_len = read_val<uint16_t>(addr);
+    accent.pattern = read_str(addr, pattern_len);
+    accent.nasal = read_ints(addr);
+    accent.devoice = read_ints(addr);
+  }
+  return true;
+}
+
+bool read_ipa(uint8_t type, const uint8_t* addr, ParsedPitch& out) {
+  if (type == 1) {
+    auto size = read_val<uint32_t>(addr);
+    return yomitan_parser::parse_ipa(read_str(addr, size), out);
+  }
+  auto reading_len = read_val<uint16_t>(addr);
+  out.reading = read_str(addr, reading_len);
+  out.transcriptions.resize(read_val<uint16_t>(addr));
+  for (auto& transcription : out.transcriptions) {
+    auto len = read_val<uint16_t>(addr);
+    transcription = read_str(addr, len);
+  }
+  return true;
+}
+
 ZSTD_DCtx* thread_dctx() {
   static thread_local std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> ctx(ZSTD_createDCtx(), ZSTD_freeDCtx);
   return ctx.get();
@@ -219,7 +273,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
     for (uint32_t i = 0; i < count; i++) {
       const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
-      // first byte encodes term (0) or meta (1) entry
+      // first byte encodes term (0), meta (1 or 3) or kanji (2) entry
       auto type = read_val<uint8_t>(blob_addr);
       if (type != 0) {
         continue;
@@ -316,7 +370,7 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
         const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
         auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1) {
+        if (type != 1 && type != 3) {
           continue;
         }
 
@@ -332,16 +386,12 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
           continue;
         }
 
-        auto freq_data_size = read_val<uint32_t>(blob_addr);
-        std::string_view freq_data = read_str(blob_addr, freq_data_size);
-
         ParsedFrequency parsed;
-        if (yomitan_parser::parse_frequency(freq_data, parsed)) {
+        if (read_frequency(type, blob_addr, parsed)) {
           if (!parsed.reading.empty() && parsed.reading != term.reading) {
             continue;
           }
-          frequencies.emplace_back(
-              Frequency{.value = parsed.value, .display_value = std::string(parsed.display_value)});
+          frequencies.emplace_back(Frequency{.value = parsed.value, .display_value = std::move(parsed.display_value)});
         }
       }
       if (!frequencies.empty()) {
@@ -367,7 +417,7 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
         const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
         auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1) {
+        if (type != 1 && type != 3) {
           continue;
         }
 
@@ -381,10 +431,7 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
         std::string_view mode = read_str(blob_addr, mode_len);
         ParsedPitch parsed;
         if (mode == "pitch") {
-          auto pitch_data_size = read_val<uint32_t>(blob_addr);
-          std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
-
-          if (yomitan_parser::parse_pitch(pitch_data, parsed)) {
+          if (read_pitch(type, blob_addr, parsed)) {
             if (!parsed.reading.empty() && parsed.reading != term.reading) {
               continue;
             }
@@ -396,9 +443,7 @@ void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
             }
           }
         } else if (mode == "ipa") {
-          auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
-          std::string_view transcriptions_data = read_str(blob_addr, transcriptions_data_size);
-          if (yomitan_parser::parse_ipa(transcriptions_data, parsed)) {
+          if (read_ipa(type, blob_addr, parsed)) {
             if (!parsed.reading.empty() && parsed.reading != term.reading) {
               continue;
             }
