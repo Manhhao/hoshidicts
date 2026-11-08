@@ -139,7 +139,9 @@ void DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
 void DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType type) {
   const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   int version = 0;
-  if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
+  if (std::filesystem::is_regular_file(path / ".hoshidicts_5")) {
+    version = 5;
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
     version = 4;
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
     version = 3;
@@ -191,7 +193,7 @@ void DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType typ
 
   dict.data->media_index = memory::map_rd(path / "media.idx");
 
-  if (version >= 4) {
+  if (std::filesystem::exists(path / "dict.zstd")) {
     std::ifstream f(path / "dict.zstd", std::ios::binary);
     const std::string blob(std::istreambuf_iterator<char>(f), {});
     dict.data->zstd_dict = ZSTD_createDDict(blob.data(), blob.size());
