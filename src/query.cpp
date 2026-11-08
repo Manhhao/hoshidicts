@@ -254,6 +254,8 @@ bool DictionaryQuery::set_dict_order(const std::vector<std::string>& paths) {
 
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
   auto results = query_raw(expression);
+  query_freq(results);
+  query_pitch(results);
   for (auto& term : results) {
     materialize(term);
   }
@@ -348,11 +350,7 @@ std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression
     }
   }
 
-  auto results = term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
-  query_freq(results);
-  query_pitch(results);
-
-  return results;
+  return term_map | std::views::values | std::views::as_rvalue | std::ranges::to<std::vector>();
 }
 
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
@@ -403,63 +401,67 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
 
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [path, name, styles, data] : pitch_dicts_) {
-      auto location = data->table(term.expression);
-      if (!location) {
+    query_pitch(term);
+  }
+}
+
+void DictionaryQuery::query_pitch(TermResult& term) const {
+  for (const auto& [path, name, styles, data] : pitch_dicts_) {
+    auto location = data->table(term.expression);
+    if (!location) {
+      continue;
+    }
+    const uint8_t* index_addr = data->blobs.data + location->offset;
+    uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
+
+    std::vector<Pitch> pitches;
+    std::vector<std::string> transcriptions;
+    for (uint32_t i = 0; i < count; i++) {
+      const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
+
+      auto type = read_val<uint8_t>(blob_addr);
+      if (type != 1 && type != 3) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + location->offset;
-      uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
 
-      std::vector<Pitch> pitches;
-      std::vector<std::string> transcriptions;
-      for (uint32_t i = 0; i < count; i++) {
-        const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
+      auto expr_len = read_val<uint16_t>(blob_addr);
+      std::string_view expr = read_str(blob_addr, expr_len);
+      if (expr != term.expression) {
+        continue;
+      }
 
-        auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1 && type != 3) {
-          continue;
-        }
-
-        auto expr_len = read_val<uint16_t>(blob_addr);
-        std::string_view expr = read_str(blob_addr, expr_len);
-        if (expr != term.expression) {
-          continue;
-        }
-
-        auto mode_len = read_val<uint8_t>(blob_addr);
-        std::string_view mode = read_str(blob_addr, mode_len);
-        ParsedPitch parsed;
-        if (mode == "pitch") {
-          if (read_pitch(type, blob_addr, parsed)) {
-            if (!parsed.reading.empty() && parsed.reading != term.reading) {
-              continue;
-            }
-            for (auto& accent : parsed.pitches) {
-              pitches.emplace_back(Pitch{.position = accent.position,
-                                         .pattern = std::move(accent.pattern),
-                                         .nasal = std::move(accent.nasal),
-                                         .devoice = std::move(accent.devoice)});
-            }
+      auto mode_len = read_val<uint8_t>(blob_addr);
+      std::string_view mode = read_str(blob_addr, mode_len);
+      ParsedPitch parsed;
+      if (mode == "pitch") {
+        if (read_pitch(type, blob_addr, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != term.reading) {
+            continue;
           }
-        } else if (mode == "ipa") {
-          if (read_ipa(type, blob_addr, parsed)) {
-            if (!parsed.reading.empty() && parsed.reading != term.reading) {
-              continue;
-            }
-            for (std::string_view transcription : parsed.transcriptions) {
-              transcriptions.emplace_back(transcription);
-            }
+          for (auto& accent : parsed.pitches) {
+            pitches.emplace_back(Pitch{.position = accent.position,
+                                       .pattern = std::move(accent.pattern),
+                                       .nasal = std::move(accent.nasal),
+                                       .devoice = std::move(accent.devoice)});
+          }
+        }
+      } else if (mode == "ipa") {
+        if (read_ipa(type, blob_addr, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != term.reading) {
+            continue;
+          }
+          for (std::string_view transcription : parsed.transcriptions) {
+            transcriptions.emplace_back(transcription);
           }
         }
       }
-      if (!pitches.empty() || !transcriptions.empty()) {
-        term.pitches.emplace_back(PitchEntry{
-            .dict_name = name,
-            .pitches = std::move(pitches),
-            .transcriptions = std::move(transcriptions),
-        });
-      }
+    }
+    if (!pitches.empty() || !transcriptions.empty()) {
+      term.pitches.emplace_back(PitchEntry{
+          .dict_name = name,
+          .pitches = std::move(pitches),
+          .transcriptions = std::move(transcriptions),
+      });
     }
   }
 }
