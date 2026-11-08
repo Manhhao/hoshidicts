@@ -291,9 +291,9 @@ std::u32string numbers_to_kanji(const std::u32string& text) {
 std::u32string strip_middle_dots(const std::u32string& text) {
   std::u32string result;
   result.reserve(text.size());
-  for (char32_t c : text) {
-    if (c != KATAKANA_MIDDLE_DOT) {
-      result += c;
+  for (size_t i = 0; i < text.size(); i++) {
+    if (text[i] != KATAKANA_MIDDLE_DOT || i + 1 == text.size()) {
+      result += text[i];
     }
   }
   return result;
