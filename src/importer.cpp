@@ -799,7 +799,7 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     setup_stream_exceptions(index_file);
     index_file.write(summary_json.data(), static_cast<std::streamsize>(summary_json.size()));
 
-    std::ofstream sui(dict_path / (zstd_dict.empty() ? ".hoshidicts_3" : ".hoshidicts_4"), std::ios::binary);
+    std::ofstream sui(dict_path / ".hoshidicts_5", std::ios::binary);
     result.success = true;
   } catch (const std::exception& e) {
     result.success = false;
