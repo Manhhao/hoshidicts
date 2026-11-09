@@ -4,7 +4,7 @@
 
 namespace language::ja {
 const LanguageProcessor& get();
-std::vector<TextVariant> preprocess(const std::string& text);
+std::vector<TextVariant> preprocess(const std::string& text, char32_t next_char = 0);
 std::vector<DeinflectionResult> deinflect(const std::string& text);
 std::vector<TextVariant> postprocess(const std::string& text);
 uint32_t pos_to_conditions(const std::vector<std::string>& part_of_speech);

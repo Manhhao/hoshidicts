@@ -10,6 +10,10 @@ class JapaneseLanguageProcessor final : public LanguageProcessor {
 
   std::vector<TextVariant> preprocess(const std::string& text) const override { return language::ja::preprocess(text); }
 
+  std::vector<TextVariant> preprocess_for_lookup(const std::string& text, char32_t next_char) const override {
+    return language::ja::preprocess(text, next_char);
+  }
+
   std::vector<DeinflectionResult> deinflect(const std::string& text) const override {
     return language::ja::deinflect(text);
   }

@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-#include "hash/hash.hpp"
+#include "hash/phf.hpp"
 #include "hoshidicts/importer.hpp"
 #include "json/yomitan_parser.hpp"
 #include "memory/memory.hpp"
@@ -38,6 +38,60 @@ std::string_view read_str(const uint8_t*& addr, uint32_t len) {
   return result;
 }
 
+std::vector<int> read_ints(const uint8_t*& addr) {
+  std::vector<int> result(read_val<uint16_t>(addr));
+  for (int& value : result) {
+    value = read_val<int32_t>(addr);
+  }
+  return result;
+}
+
+bool read_frequency(uint8_t type, const uint8_t* addr, ParsedFrequency& out) {
+  if (type == 1) {
+    auto size = read_val<uint32_t>(addr);
+    return yomitan_parser::parse_frequency(read_str(addr, size), out);
+  }
+  auto reading_len = read_val<uint16_t>(addr);
+  out.reading = read_str(addr, reading_len);
+  out.value = read_val<int32_t>(addr);
+  auto display_len = read_val<uint16_t>(addr);
+  out.display_value = read_str(addr, display_len);
+  return true;
+}
+
+bool read_pitch(uint8_t type, const uint8_t* addr, ParsedPitch& out) {
+  if (type == 1) {
+    auto size = read_val<uint32_t>(addr);
+    return yomitan_parser::parse_pitch(read_str(addr, size), out);
+  }
+  auto reading_len = read_val<uint16_t>(addr);
+  out.reading = read_str(addr, reading_len);
+  out.pitches.resize(read_val<uint16_t>(addr));
+  for (auto& accent : out.pitches) {
+    accent.position = read_val<int32_t>(addr);
+    auto pattern_len = read_val<uint16_t>(addr);
+    accent.pattern = read_str(addr, pattern_len);
+    accent.nasal = read_ints(addr);
+    accent.devoice = read_ints(addr);
+  }
+  return true;
+}
+
+bool read_ipa(uint8_t type, const uint8_t* addr, ParsedPitch& out) {
+  if (type == 1) {
+    auto size = read_val<uint32_t>(addr);
+    return yomitan_parser::parse_ipa(read_str(addr, size), out);
+  }
+  auto reading_len = read_val<uint16_t>(addr);
+  out.reading = read_str(addr, reading_len);
+  out.transcriptions.resize(read_val<uint16_t>(addr));
+  for (auto& transcription : out.transcriptions) {
+    auto len = read_val<uint16_t>(addr);
+    transcription = read_str(addr, len);
+  }
+  return true;
+}
+
 ZSTD_DCtx* thread_dctx() {
   static thread_local std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> ctx(ZSTD_createDCtx(), ZSTD_freeDCtx);
   return ctx.get();
@@ -46,11 +100,9 @@ ZSTD_DCtx* thread_dctx() {
 
 struct DictionaryQuery::DictionaryData {
   uint8_t format_version = 1;
-  hash::linear table;
-  hash::bloom bloom;
+  hash::phf table;
   memory::mapped_file blobs;
-  memory::mapped_file hash_table;
-  memory::mapped_file bloom_filter;
+  memory::mapped_file phf_table;
   memory::mapped_file media_index;
   std::mutex media_mutex;
   ankerl::unordered_dense::map<uint64_t, memory::mapped_file> media_views;
@@ -58,8 +110,7 @@ struct DictionaryQuery::DictionaryData {
 
   ~DictionaryData() {
     memory::unmap(blobs);
-    memory::unmap(hash_table);
-    memory::unmap(bloom_filter);
+    memory::unmap(phf_table);
     memory::unmap(media_index);
     for (const auto& [offset, view] : media_views) {
       memory::unmap(view);
@@ -91,7 +142,9 @@ bool DictionaryQuery::add_dict(const std::string& path_utf8, DictionaryType type
 bool DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType type) {
   const std::filesystem::path path = path_utils::from_utf8(path_utf8);
   uint8_t format_version = 0;
-  if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
+  if (std::filesystem::is_regular_file(path / ".hoshidicts_5")) {
+    format_version = 5;
+  } else if (std::filesystem::is_regular_file(path / ".hoshidicts_4")) {
     format_version = 4;
   } else if (std::filesystem::is_regular_file(path / ".hoshidicts_3")) {
     format_version = 3;
@@ -125,22 +178,17 @@ bool DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType typ
   dict.data = std::make_unique<DictionaryData>();
   dict.data->format_version = format_version;
 
-  dict.data->hash_table = memory::map_rd(path / "hash.table");
-  if (!dict.data->hash_table) {
+  const auto phf_path = path / "phf.table";
+  if (format_version < 5 && !std::filesystem::exists(phf_path) && !hash::phf::migrate(path)) {
     return false;
   }
-  if (!dict.data->table.load(dict.data->hash_table.data, dict.data->hash_table.size)) {
+  dict.data->phf_table = memory::map_rd(phf_path);
+  if (!dict.data->phf_table) {
     return false;
   }
-
-  dict.data->bloom_filter = memory::map_rd(path / "bloom.filter");
-  if (!dict.data->bloom_filter) {
+  if (!dict.data->table.load(dict.data->phf_table.data, dict.data->phf_table.size)) {
     return false;
   }
-  if (!dict.data->bloom.load(dict.data->bloom_filter.data, dict.data->bloom_filter.size)) {
-    return false;
-  }
-  dict.data->table.set_bloom(&dict.data->bloom);
 
   dict.data->blobs = memory::map_rd(path / "blobs.bin");
   if (!dict.data->blobs) {
@@ -149,8 +197,9 @@ bool DictionaryQuery::add_dict_(const std::string& path_utf8, DictionaryType typ
 
   dict.data->media_index = memory::map_rd(path / "media.idx");
 
-  if (format_version >= 4) {
-    std::ifstream f(path / "dict.zstd", std::ios::binary);
+  const auto zstd_path = path / "dict.zstd";
+  if (format_version == 4 || (format_version == 5 && std::filesystem::exists(zstd_path))) {
+    std::ifstream f(zstd_path, std::ios::binary);
     if (!f) {
       return false;
     }
@@ -237,36 +286,29 @@ bool DictionaryQuery::set_dict_order(const std::vector<std::string>& paths) {
 }
 
 std::vector<TermResult> DictionaryQuery::query(const std::string& expression) const {
-  auto results = query_raw(expression);
+  auto results = merge_term_entries(query_raw_entries(expression));
+  query_freq(results);
+  query_pitch(results);
   for (auto& term : results) {
     materialize(term);
   }
   return results;
 }
 
-std::vector<TermResult> DictionaryQuery::query_raw(const std::string& expression) const {
-  auto results = merge_term_entries(query_raw_entries(expression));
-  query_freq(results);
-  query_pitch(results);
-
-  return results;
-}
-
 std::vector<TermResult> DictionaryQuery::query_raw_entries(const std::string& expression) const {
   std::vector<TermResult> results;
   for (const auto& [path, name, styles, data] : term_dicts_) {
-    uint64_t offset_addr = data->table(expression);
-    if (offset_addr == 0) {
+    auto location = data->table(expression);
+    if (!location) {
       continue;
     }
-    const uint8_t* index_addr = data->blobs.data + offset_addr;
+    const uint8_t* index_addr = data->blobs.data + location->offset;
 
-    auto count = read_val<uint32_t>(index_addr);
+    uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
     for (uint32_t i = 0; i < count; i++) {
-      auto offset = read_val<uint64_t>(index_addr);
-      const uint8_t* blob_addr = data->blobs.data + offset;
+      const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
-      // first byte encodes term (0) or meta (1) entry
+      // first byte encodes term (0), meta (1 or 3) or kanji (2) entry
       auto type = read_val<uint8_t>(blob_addr);
       if (type != 0) {
         continue;
@@ -381,20 +423,19 @@ void DictionaryQuery::order_glossaries(std::vector<GlossaryEntry>& glossaries) c
 void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
     for (const auto& [path, name, styles, data] : freq_dicts_) {
-      uint64_t offset_addr = data->table(term.expression);
-      if (offset_addr == 0) {
+      auto location = data->table(term.expression);
+      if (!location) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + offset_addr;
-      auto count = read_val<uint32_t>(index_addr);
+      const uint8_t* index_addr = data->blobs.data + location->offset;
+      uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
 
       std::vector<Frequency> frequencies;
       for (uint32_t i = 0; i < count; i++) {
-        auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs.data + offset;
+        const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
         auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1) {
+        if (type != 1 && type != 3) {
           continue;
         }
 
@@ -410,16 +451,12 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
           continue;
         }
 
-        auto freq_data_size = read_val<uint32_t>(blob_addr);
-        std::string_view freq_data = read_str(blob_addr, freq_data_size);
-
         ParsedFrequency parsed;
-        if (yomitan_parser::parse_frequency(freq_data, parsed)) {
+        if (read_frequency(type, blob_addr, parsed)) {
           if (!parsed.reading.empty() && parsed.reading != term.reading) {
             continue;
           }
-          frequencies.emplace_back(
-              Frequency{.value = parsed.value, .display_value = std::string(parsed.display_value)});
+          frequencies.emplace_back(Frequency{.value = parsed.value, .display_value = std::move(parsed.display_value)});
         }
       }
       if (!frequencies.empty()) {
@@ -431,69 +468,67 @@ void DictionaryQuery::query_freq(std::vector<TermResult>& terms) const {
 
 void DictionaryQuery::query_pitch(std::vector<TermResult>& terms) const {
   for (auto& term : terms) {
-    for (const auto& [path, name, styles, data] : pitch_dicts_) {
-      uint64_t offset_addr = data->table(term.expression);
-      if (offset_addr == 0) {
+    query_pitch(term);
+  }
+}
+
+void DictionaryQuery::query_pitch(TermResult& term) const {
+  for (const auto& [path, name, styles, data] : pitch_dicts_) {
+    auto location = data->table(term.expression);
+    if (!location) {
+      continue;
+    }
+    const uint8_t* index_addr = data->blobs.data + location->offset;
+    uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
+
+    std::vector<Pitch> pitches;
+    std::vector<std::string> transcriptions;
+    for (uint32_t i = 0; i < count; i++) {
+      const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
+
+      auto type = read_val<uint8_t>(blob_addr);
+      if (type != 1 && type != 3) {
         continue;
       }
-      const uint8_t* index_addr = data->blobs.data + offset_addr;
-      auto count = read_val<uint32_t>(index_addr);
 
-      std::vector<Pitch> pitches;
-      std::vector<std::string> transcriptions;
-      for (uint32_t i = 0; i < count; i++) {
-        auto offset = read_val<uint64_t>(index_addr);
-        const uint8_t* blob_addr = data->blobs.data + offset;
+      auto expr_len = read_val<uint16_t>(blob_addr);
+      std::string_view expr = read_str(blob_addr, expr_len);
+      if (expr != term.expression) {
+        continue;
+      }
 
-        auto type = read_val<uint8_t>(blob_addr);
-        if (type != 1) {
-          continue;
-        }
-
-        auto expr_len = read_val<uint16_t>(blob_addr);
-        std::string_view expr = read_str(blob_addr, expr_len);
-        if (expr != term.expression) {
-          continue;
-        }
-
-        auto mode_len = read_val<uint8_t>(blob_addr);
-        std::string_view mode = read_str(blob_addr, mode_len);
-        ParsedPitch parsed;
-        if (mode == "pitch") {
-          auto pitch_data_size = read_val<uint32_t>(blob_addr);
-          std::string_view pitch_data = read_str(blob_addr, pitch_data_size);
-
-          if (yomitan_parser::parse_pitch(pitch_data, parsed)) {
-            if (!parsed.reading.empty() && parsed.reading != term.reading) {
-              continue;
-            }
-            for (auto& accent : parsed.pitches) {
-              pitches.emplace_back(Pitch{.position = accent.position,
-                                         .pattern = std::move(accent.pattern),
-                                         .nasal = std::move(accent.nasal),
-                                         .devoice = std::move(accent.devoice)});
-            }
+      auto mode_len = read_val<uint8_t>(blob_addr);
+      std::string_view mode = read_str(blob_addr, mode_len);
+      ParsedPitch parsed;
+      if (mode == "pitch") {
+        if (read_pitch(type, blob_addr, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != term.reading) {
+            continue;
           }
-        } else if (mode == "ipa") {
-          auto transcriptions_data_size = read_val<uint32_t>(blob_addr);
-          std::string_view transcriptions_data = read_str(blob_addr, transcriptions_data_size);
-          if (yomitan_parser::parse_ipa(transcriptions_data, parsed)) {
-            if (!parsed.reading.empty() && parsed.reading != term.reading) {
-              continue;
-            }
-            for (std::string_view transcription : parsed.transcriptions) {
-              transcriptions.emplace_back(transcription);
-            }
+          for (auto& accent : parsed.pitches) {
+            pitches.emplace_back(Pitch{.position = accent.position,
+                                       .pattern = std::move(accent.pattern),
+                                       .nasal = std::move(accent.nasal),
+                                       .devoice = std::move(accent.devoice)});
+          }
+        }
+      } else if (mode == "ipa") {
+        if (read_ipa(type, blob_addr, parsed)) {
+          if (!parsed.reading.empty() && parsed.reading != term.reading) {
+            continue;
+          }
+          for (std::string_view transcription : parsed.transcriptions) {
+            transcriptions.emplace_back(transcription);
           }
         }
       }
-      if (!pitches.empty() || !transcriptions.empty()) {
-        term.pitches.emplace_back(PitchEntry{
-            .dict_name = name,
-            .pitches = std::move(pitches),
-            .transcriptions = std::move(transcriptions),
-        });
-      }
+    }
+    if (!pitches.empty() || !transcriptions.empty()) {
+      term.pitches.emplace_back(PitchEntry{
+          .dict_name = name,
+          .pitches = std::move(pitches),
+          .transcriptions = std::move(transcriptions),
+      });
     }
   }
 }
@@ -503,16 +538,15 @@ KanjiResult DictionaryQuery::query_kanji(const std::string& kanji) const {
   result.character = kanji;
 
   for (const auto& [path, name, styles, data] : kanji_dicts_) {
-    uint64_t offset_addr = data->table(kanji);
-    if (offset_addr == 0) {
+    auto location = data->table(kanji);
+    if (!location) {
       continue;
     }
-    const uint8_t* index_addr = data->blobs.data + offset_addr;
-    auto count = read_val<uint32_t>(index_addr);
+    const uint8_t* index_addr = data->blobs.data + location->offset;
+    uint32_t count = location->single ? 1 : read_val<uint32_t>(index_addr);
 
     for (uint32_t i = 0; i < count; i++) {
-      auto offset = read_val<uint64_t>(index_addr);
-      const uint8_t* blob_addr = data->blobs.data + offset;
+      const uint8_t* blob_addr = location->single ? index_addr : data->blobs.data + read_val<uint64_t>(index_addr);
 
       auto type = read_val<uint8_t>(blob_addr);
       if (type != 2) {

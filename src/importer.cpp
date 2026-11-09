@@ -24,8 +24,7 @@
 #include <thread>
 #include <vector>
 
-#include "hash/bloom.hpp"
-#include "hash/hash.hpp"
+#include "hash/phf.hpp"
 #include "json/yomitan_parser.hpp"
 #include "path_utils.hpp"
 #include "zip/zip.hpp"
@@ -110,6 +109,13 @@ void write_str(std::vector<char>& out, std::string_view value) {
   const size_t old_size = out.size();
   out.resize(old_size + value.size());
   std::memcpy(out.data() + old_size, value.data(), value.size());
+}
+
+void write_ints(std::vector<char>& out, const std::vector<int>& values) {
+  write_val<uint16_t>(out, values.size());
+  for (int value : values) {
+    write_val<int32_t>(out, value);
+  }
 }
 
 void write_bytes(std::vector<char>& out, const void* data, size_t n) {
@@ -392,22 +398,60 @@ ProcessedFile process_meta_bank(const std::string& content) {
   }
 
   for (auto& meta : out) {
-    uint64_t offset = processed.data.size();
     std::string_view expr = meta.expression;
     std::string_view mode = meta.mode;
     std::string_view data = meta.data.str;
+    processed.count++;
+    processed.meta_counts[std::string(mode)]++;
 
-    write_val<uint8_t>(processed.data, 1);
+    ParsedFrequency frequency;
+    ParsedPitch pitch;
+    bool parsed = false;
+    if (mode == "freq") {
+      parsed = yomitan_parser::parse_frequency(data, frequency);
+    } else if (mode == "pitch") {
+      parsed = yomitan_parser::parse_pitch(data, pitch);
+    } else if (mode == "ipa") {
+      parsed = yomitan_parser::parse_ipa(data, pitch);
+    }
+    if (!parsed) {
+      continue;
+    }
+
+    uint64_t offset = processed.data.size();
+    write_val<uint8_t>(processed.data, 3);
     write_val<uint16_t>(processed.data, expr.size());
     write_str(processed.data, expr);
     write_val<uint8_t>(processed.data, mode.size());
     write_str(processed.data, mode);
-    write_val<uint32_t>(processed.data, data.size());
-    write_str(processed.data, data);
+    if (mode == "freq") {
+      write_val<uint16_t>(processed.data, frequency.reading.size());
+      write_str(processed.data, frequency.reading);
+      write_val<int32_t>(processed.data, frequency.value);
+      write_val<uint16_t>(processed.data, frequency.display_value.size());
+      write_str(processed.data, frequency.display_value);
+    } else if (mode == "pitch") {
+      write_val<uint16_t>(processed.data, pitch.reading.size());
+      write_str(processed.data, pitch.reading);
+      write_val<uint16_t>(processed.data, pitch.pitches.size());
+      for (const auto& accent : pitch.pitches) {
+        write_val<int32_t>(processed.data, accent.position);
+        write_val<uint16_t>(processed.data, accent.pattern.size());
+        write_str(processed.data, accent.pattern);
+        write_ints(processed.data, accent.nasal);
+        write_ints(processed.data, accent.devoice);
+      }
+    } else {
+      write_val<uint16_t>(processed.data, pitch.reading.size());
+      write_str(processed.data, pitch.reading);
+      write_val<uint16_t>(processed.data, pitch.transcriptions.size());
+      for (std::string_view transcription : pitch.transcriptions) {
+        write_val<uint16_t>(processed.data, transcription.size());
+        write_str(processed.data, transcription);
+      }
+    }
 
     processed.offsets.emplace_back(XXH3_64bits(expr.data(), expr.size()), offset);
-    processed.count++;
-    processed.meta_counts[std::string(mode)]++;
   }
 
   processed.meta_counts["total"] = processed.count;
@@ -686,7 +730,7 @@ void write_kanji(std::ofstream& file, std::vector<std::pair<uint64_t, uint64_t>>
 }
 
 std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>& offsets, uint64_t& write_offset,
-                                     std::vector<std::pair<uint64_t, uint64_t>>& hash_entries) {
+                                     std::vector<std::pair<uint64_t, hash::phf::location>>& hash_entries) {
   std::vector<char> offset_buf;
   radix_sort(offsets);
   for (size_t i = 0; i < offsets.size();) {
@@ -695,7 +739,12 @@ std::vector<char> build_offset_index(std::vector<std::pair<uint64_t, uint64_t>>&
       j++;
     }
 
-    hash_entries.emplace_back(offsets[i].first, write_offset);
+    if (j - i == 1) {
+      hash_entries.emplace_back(offsets[i].first, hash::phf::location{.offset = offsets[i].second, .single = true});
+      i = j;
+      continue;
+    }
+    hash_entries.emplace_back(offsets[i].first, hash::phf::location{.offset = write_offset, .single = false});
 
     auto count = static_cast<uint32_t>(j - i);
     write_val<uint32_t>(offset_buf, count);
@@ -817,15 +866,12 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
       throw std::runtime_error("empty dictionary");
     }
 
-    std::vector<std::pair<uint64_t, uint64_t>> hash_entries;
+    std::vector<std::pair<uint64_t, hash::phf::location>> hash_entries;
     auto offset_buf = build_offset_index(offsets, write_offset, hash_entries);
     std::vector<std::pair<uint64_t, uint64_t>>().swap(offsets);
 
     auto hash_thread = std::async(std::launch::async, [&hash_entries, &dict_path]() {
-      hash::linear table;
-      table.build_to_file(hash_entries, dict_path / "hash.table");
-      auto hashes = hash_entries | std::views::keys | std::ranges::to<std::vector>();
-      hash::bloom::build_to_file(hashes, dict_path / "bloom.filter");
+      hash::phf::build_to_file(hash_entries, dict_path / "phf.table");
     });
 
     blobs.write(offset_buf.data(), static_cast<std::streamsize>(offset_buf.size()));
@@ -841,15 +887,11 @@ ImportResult dictionary_importer::import(const std::string& zip_path, const std:
     setup_stream_exceptions(index_file);
     index_file.write(summary_json.data(), static_cast<std::streamsize>(summary_json.size()));
 
-    const std::filesystem::path marker = dict_path / (zstd_dict.empty() ? ".hoshidicts_3" : ".hoshidicts_4");
-    std::ofstream marker_file(marker, std::ios::binary);
+    std::ofstream marker_file(dict_path / ".hoshidicts_5", std::ios::binary);
     setup_stream_exceptions(marker_file);
     marker_file.close();
     for (int version = 1; version <= 4; ++version) {
-      const auto candidate = dict_path / (".hoshidicts_" + std::to_string(version));
-      if (candidate != marker) {
-        std::filesystem::remove(candidate);
-      }
+      std::filesystem::remove(dict_path / (".hoshidicts_" + std::to_string(version)));
     }
     if (zstd_dict.empty()) {
       std::filesystem::remove(dict_path / "dict.zstd");

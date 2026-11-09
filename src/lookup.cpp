@@ -30,11 +30,6 @@ struct EffectivePosConditions {
   uint32_t conditions;
 };
 
-struct TermMetadata {
-  std::vector<FrequencyEntry> frequencies;
-  std::vector<PitchEntry> pitches;
-};
-
 struct DictionaryRedirectResult {
   DeinflectionResult deinflection;
   std::vector<std::string> visited;
@@ -365,13 +360,20 @@ TraceSortKey best_trace_sort_key(const LookupResult& result) {
                           }));
 }
 
+size_t rewritten_chars(std::string_view variant, std::string_view deinflected) {
+  auto it = std::ranges::mismatch(variant, deinflected).in1;
+  while (it != variant.begin() && it != variant.end() && (*it & 0xc0) == 0x80) {
+    --it;
+  }
+  return utf8::distance(it, variant.end());
+}
 }
 
 std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int max_results, size_t scan_length,
                                          const LookupOptions& options) const {
   std::map<LookupResultKey, LookupResult> result_map;
   std::map<std::string, std::vector<TermResult>> raw_entries_cache;
-  std::map<HeadwordKey, TermMetadata> term_metadata_cache;
+  std::map<HeadwordKey, std::vector<FrequencyEntry>> term_frequency_cache;
 
   auto query_raw_entries_cached = [&](const std::string& expression) {
     const auto cached = raw_entries_cache.find(expression);
@@ -384,17 +386,16 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     return terms;
   };
 
-  auto add_term_metadata = [&](std::vector<TermResult>& terms) {
+  auto add_term_frequencies = [&](std::vector<TermResult>& terms) {
     std::vector<TermResult> terms_to_query;
     std::vector<std::pair<size_t, HeadwordKey>> uncached_terms;
     std::map<HeadwordKey, size_t> uncached_query_indices;
 
     for (size_t i = 0; i < terms.size(); ++i) {
       auto key = make_headword_key(terms[i]);
-      const auto cached = term_metadata_cache.find(key);
-      if (cached != term_metadata_cache.end()) {
-        terms[i].frequencies = cached->second.frequencies;
-        terms[i].pitches = cached->second.pitches;
+      const auto cached = term_frequency_cache.find(key);
+      if (cached != term_frequency_cache.end()) {
+        terms[i].frequencies = cached->second;
         continue;
       }
 
@@ -410,18 +411,14 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
     }
 
     query_.query_freq(terms_to_query);
-    query_.query_pitch(terms_to_query);
 
     for (const auto& [key, query_index] : uncached_query_indices) {
-      auto metadata = TermMetadata{.frequencies = terms_to_query[query_index].frequencies,
-                                   .pitches = terms_to_query[query_index].pitches};
-      term_metadata_cache.emplace(key, std::move(metadata));
+      term_frequency_cache.emplace(key, std::move(terms_to_query[query_index].frequencies));
     }
 
     for (const auto& [term_index, key] : uncached_terms) {
-      const auto cached = term_metadata_cache.find(key);
-      terms[term_index].frequencies = cached->second.frequencies;
-      terms[term_index].pitches = cached->second.pitches;
+      const auto cached = term_frequency_cache.find(key);
+      terms[term_index].frequencies = cached->second;
     }
   };
 
@@ -429,7 +426,7 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
                               std::vector<TermResult> terms) {
     remove_dictionary_redirect_only_terms(terms);
     terms = merge_lookup_terms(language_, std::move(terms));
-    add_term_metadata(terms);
+    add_term_frequencies(terms);
 
     for (auto& term : terms) {
       auto key = make_lookup_result_key(language_, term);
@@ -461,10 +458,17 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
 
   for (size_t i = std::min(scan_length, text_len); i > 0; i--) {
     std::string search_str(lookup_string.begin(), search_str_it);
-    auto processor_results = language_.preprocess(search_str);
+    char32_t next_char = search_str_it != lookup_string.end() ? utf8::peek_next(search_str_it, lookup_string.end()) : 0;
+    auto processor_results = language_.preprocess_for_lookup(search_str, next_char);
     for (auto& variant : processor_results) {
       auto deinflection_results = language_.deinflect(variant.text);
       for (auto& deinflection : deinflection_results) {
+        if (variant.min_rewrite != 0 || variant.max_rewrite != SIZE_MAX) {
+          const auto rewritten = rewritten_chars(variant.text, deinflection.text);
+          if (rewritten > variant.max_rewrite || (rewritten > 0 && rewritten < variant.min_rewrite)) {
+            continue;
+          }
+        }
         auto postprocessor_results = language_.postprocess(deinflection.text);
         for (auto& postprocessed : postprocessor_results) {
           auto terms = query_raw_entries_cached(postprocessed.text);
@@ -588,6 +592,7 @@ std::vector<LookupResult> Lookup::lookup(const std::string& lookup_string, int m
 
   for (auto& r : results) {
     query_.order_glossaries(r.term.glossaries);
+    query_.query_pitch(r.term);
     query_.materialize(r.term);
   }
   std::erase_if(results, [](const LookupResult& result) { return result.term.glossaries.empty(); });

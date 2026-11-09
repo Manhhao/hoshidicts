@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -8,6 +9,8 @@
 struct TextVariant {
   std::string text;
   int steps = 0;
+  std::size_t min_rewrite = 0;
+  std::size_t max_rewrite = SIZE_MAX;
 };
 
 struct TransformGroup {
@@ -46,6 +49,9 @@ class LanguageProcessor {
   virtual std::string normalize_reading(const std::string& reading) const { return reading; }
   // A hint for text scanners; explicit lookups are not restricted by this predicate.
   virtual bool is_text_lookup_worthy(const std::string&) const { return true; }
+  virtual std::vector<TextVariant> preprocess_for_lookup(const std::string& text, char32_t) const {
+    return preprocess(text);
+  }
 };
 
 namespace language {
