@@ -67,7 +67,7 @@ void cmd_deinflect(const std::string& inflected) {
 }
 
 void cmd_preprocess(const std::string& text) {
-  auto results = text_processor::process(text);
+  auto results = text_processor::process(text, 0);
 
   std::cout << std::format("preproccesing for: {} length: {}\n", text, utf8::distance(text.begin(), text.end()));
   std::cout << std::format("found {} variants\n", results.size());
