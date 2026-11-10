@@ -1311,6 +1311,52 @@ void Deinflector::init_transforms() {
   add_rule({.from = "きやがる", .to = "くる", .conditions_in = V5, .conditions_out = VK, .group_id = id});
   add_rule({.from = "来やがる", .to = "来る", .conditions_in = V5, .conditions_out = VK, .group_id = id});
   add_rule({.from = "來やがる", .to = "來る", .conditions_in = V5, .conditions_out = VK, .group_id = id});
+
+  id = add_group({.name = "-やしない",
+                  .description = "1. Expresses dissatisfaction or blame.\n"
+                                 "2. Strongly denies an obvious fact.\n"
+                                 "Usage: Attach やしない to the continuative form (連用形) of verbs. It itself "
+                                 "conjugates as an i-adjective."});
+  add_rule({.from = "やしない", .to = "る", .conditions_in = ADJ_I, .conditions_out = V1, .group_id = id});
+  add_rule({.from = "いやしない", .to = "う", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "ひやしない", .to = "う", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "きやしない", .to = "く", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "ぎやしない", .to = "ぐ", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "しやしない", .to = "す", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "ちやしない", .to = "つ", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "にやしない", .to = "ぬ", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "びやしない", .to = "ぶ", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "みやしない", .to = "む", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "りやしない", .to = "る", .conditions_in = ADJ_I, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "じやしない", .to = "ずる", .conditions_in = ADJ_I, .conditions_out = VZ, .group_id = id});
+  add_rule({.from = "しやしない", .to = "する", .conditions_in = ADJ_I, .conditions_out = VS, .group_id = id});
+  add_rule({.from = "為やしない", .to = "為る", .conditions_in = ADJ_I, .conditions_out = VS, .group_id = id});
+  add_rule({.from = "きやしない", .to = "くる", .conditions_in = ADJ_I, .conditions_out = VK, .group_id = id});
+  add_rule({.from = "来やしない", .to = "来る", .conditions_in = ADJ_I, .conditions_out = VK, .group_id = id});
+  add_rule({.from = "來やしない", .to = "來る", .conditions_in = ADJ_I, .conditions_out = VK, .group_id = id});
+
+  id = add_group({.name = "-やしません",
+                  .description = "Polite form of -やしない.\n"
+                                 "1. Expresses dissatisfaction or blame.\n"
+                                 "2. Strongly denies an obvious fact.\n"
+                                 "Usage: Attach やしません to the continuative form (連用形) of verbs."});
+  add_rule({.from = "やしません", .to = "る", .conditions_in = MASEN, .conditions_out = V1, .group_id = id});
+  add_rule({.from = "いやしません", .to = "う", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "ひやしません", .to = "う", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "きやしません", .to = "く", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "ぎやしません", .to = "ぐ", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "しやしません", .to = "す", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "ちやしません", .to = "つ", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "にやしません", .to = "ぬ", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "びやしません", .to = "ぶ", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "みやしません", .to = "む", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "りやしません", .to = "る", .conditions_in = MASEN, .conditions_out = V5, .group_id = id});
+  add_rule({.from = "じやしません", .to = "ずる", .conditions_in = MASEN, .conditions_out = VZ, .group_id = id});
+  add_rule({.from = "しやしません", .to = "する", .conditions_in = MASEN, .conditions_out = VS, .group_id = id});
+  add_rule({.from = "為やしません", .to = "為る", .conditions_in = MASEN, .conditions_out = VS, .group_id = id});
+  add_rule({.from = "きやしません", .to = "くる", .conditions_in = MASEN, .conditions_out = VK, .group_id = id});
+  add_rule({.from = "来やしません", .to = "来る", .conditions_in = MASEN, .conditions_out = VK, .group_id = id});
+  add_rule({.from = "來やしません", .to = "來る", .conditions_in = MASEN, .conditions_out = VK, .group_id = id});
 }
 
 int Deinflector::add_group(const TransformGroup& group) {
